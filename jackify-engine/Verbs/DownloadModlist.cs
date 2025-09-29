@@ -9,8 +9,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Wabbajack.CLI.Builder;
+using Wabbajack.Common;
 using Wabbajack.Networking.WabbajackClientApi;
 using Wabbajack.Paths;
+using Wabbajack.Paths.IO;
+using Wabbajack.Downloaders;
+using Wabbajack.DTOs;
 
 namespace Wabbajack.CLI.Verbs;
 
@@ -19,12 +23,14 @@ public class DownloadWabbajackFile
     private readonly ILogger<DownloadWabbajackFile> _logger;
     private readonly Client _client;
     private readonly HttpClient _httpClient;
+    private readonly DownloadDispatcher _dispatcher;
 
-    public DownloadWabbajackFile(ILogger<DownloadWabbajackFile> logger, Client wjClient, HttpClient httpClient)
+    public DownloadWabbajackFile(ILogger<DownloadWabbajackFile> logger, Client wjClient, HttpClient httpClient, DownloadDispatcher dispatcher)
     {
         _logger = logger;
         _client = wjClient;
         _httpClient = httpClient;
+        _dispatcher = dispatcher;
     }
 
     public static VerbDefinition Definition = new(
@@ -58,25 +64,39 @@ public class DownloadWabbajackFile
             return 1;
         }
 
-        var downloadUrl = list.Links.Download;
-        if (string.IsNullOrEmpty(downloadUrl))
+        // Use the same dispatcher pipeline as install to handle mirrors/cdn/auth
+        var state = _dispatcher.Parse(new Uri(list.Links.Download));
+        if (state == null)
         {
-            _logger.LogError("Modlist {MachineUrl} does not provide a download link", machineUrl);
+            _logger.LogError("Failed to parse download URL for {MachineUrl}", machineUrl);
             return 1;
         }
 
-        _logger.LogInformation("Downloading .wabbajack from {Url} -> {Output}", downloadUrl, output);
-        // Ensure output directory exists (use Wabbajack path helpers)
+        var archive = new Archive
+        {
+            Name = output.FileName.ToString(),
+            Hash = list.DownloadMetadata!.Hash,
+            Size = list.DownloadMetadata.Size,
+            State = state
+        };
+
         output.Parent.CreateDirectory();
 
-        using var req = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
-        using var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
-        resp.EnsureSuccessStatusCode();
-        await using var src = await resp.Content.ReadAsStreamAsync(token);
-        // Write directly using AbsolutePath helper
-        await output.WriteAllAsync(src, token);
+        // Progress printer: current/total and MB/s like install
+        var started = DateTime.UtcNow;
+        await _dispatcher.Download(archive, output, token, (processed, total) =>
+        {
+            var elapsed = DateTime.UtcNow - started;
+            var speedMBps = elapsed.TotalSeconds > 0 ? (processed / 1024.0 / 1024.0) / elapsed.TotalSeconds : 0;
+            var totalMB = total / 1024.0 / 1024.0;
+            var processedMB = processed / 1024.0 / 1024.0;
+            ConsoleOutput.PrintProgressWithDuration($"Downloading .wabbajack ({processedMB:F1}/{totalMB:F1}MB) - {speedMBps:F1}MB/s");
+        });
 
-        _logger.LogInformation("Saved file to {Output}", output);
+        // Clear progress line after completion
+        ConsoleOutput.ClearProgressLine();
+
+        _logger.LogInformation("Saved file to {Output} in {Seconds:F1}s", output, (DateTime.UtcNow - started).TotalSeconds);
         Console.WriteLine(output.ToString());
         return 0;
     }

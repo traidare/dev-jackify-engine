@@ -47,6 +47,8 @@ public static class CommandLineBuilderExtensions
         services.AddSingleton<ListModlists>();
         CommandLineBuilder.RegisterCommand<GetModlistUrl>(GetModlistUrl.Definition, c => ((GetModlistUrl)c).Run);
         services.AddSingleton<GetModlistUrl>();
+        CommandLineBuilder.RegisterCommand<DownloadWabbajackFile>(DownloadWabbajackFile.Definition, c => ((DownloadWabbajackFile)c).Run);
+        services.AddSingleton<DownloadWabbajackFile>();
         CommandLineBuilder.RegisterCommand<MegaLogin>(MegaLogin.Definition, c => ((MegaLogin)c).Run);
         services.AddSingleton<MegaLogin>();
         CommandLineBuilder.RegisterCommand<MirrorFile>(MirrorFile.Definition, c => ((MirrorFile)c).Run);

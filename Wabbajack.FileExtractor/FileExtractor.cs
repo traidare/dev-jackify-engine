@@ -259,7 +259,40 @@ public class FileExtractor
                     // Fall through to original exception
                 }
             }
-            
+
+            // Check if we should attempt a broader Proton fallback for case sensitivity or other extraction issues
+            bool shouldTryBroaderFallback = RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
+                                           (sFn.Name.FileName.Extension == Extension.FromPath(".zip") ||
+                                            sFn.Name.FileName.Extension == Extension.FromPath(".7z") ||
+                                            sFn.Name.FileName.Extension == Extension.FromPath(".rar")) &&
+                                           !couldBeForeignCharIssue; // Only if we didn't already try the foreign char fallback
+
+            if (shouldTryBroaderFallback)
+            {
+                _logger.LogInformation("Attempting Proton 7z.exe fallback for potential case sensitivity issue in {ArchiveName} ({ResultCount}/{ExpectedCount} files)",
+                    sFn.Name.FileName, results.Count, onlyFiles.Count);
+
+                try
+                {
+                    var protonResults = await GatheringExtractWithProton7Zip(sFn, shouldExtract, mapfn, onlyFiles, token, progressFunction);
+                    if (protonResults.Count == onlyFiles.Count)
+                    {
+                        _logger.LogInformation("Proton 7z.exe fallback successful for {ArchiveName}: {Count}/{ExpectedCount} files extracted",
+                            sFn.Name.FileName, protonResults.Count, onlyFiles.Count);
+                        return protonResults;
+                    }
+                    else
+                    {
+                        _logger.LogError("Proton 7z.exe fallback still has count mismatch for {ArchiveName}: {Count}/{ExpectedCount}",
+                            sFn.Name.FileName, protonResults.Count, onlyFiles.Count);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Proton 7z.exe broader fallback failed for {ArchiveName}", sFn.Name.FileName);
+                }
+            }
+
             // If we get here, either no fallback was attempted or it failed
             throw new Exception(
                 $"Sanity check error extracting {sFn.Name} - {results.Count} results, expected {onlyFiles.Count}. This is a critical extraction failure that must be resolved.");
