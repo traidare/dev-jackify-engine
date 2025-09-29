@@ -55,6 +55,7 @@ public class GetModlistUrl
         }
 
         // Output the namespaced name (machineURL)
+        Console.WriteLine(matchingModlist.NamespacedName);
         _logger.LogInformation("{MachineURL}", matchingModlist.NamespacedName);
         return 0;
     }
