@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NLog.Extensions.Logging;
 using NLog.Targets;
+using NLog.Filters;
 using Octokit;
 using Wabbajack.DTOs.Interventions;
 using Wabbajack.Networking.Http;
@@ -92,7 +93,14 @@ internal class Program
         else
         {
             // In non-debug mode, show info, warnings and errors on console
-            config.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, consoleTarget);
+            // Suppress noisy HttpMessageHandler cleanup messages from dependencies
+            var consoleRule = new NLog.Config.LoggingRule("*", NLog.LogLevel.Info, NLog.LogLevel.Fatal, consoleTarget);
+            consoleRule.Filters.Add(new ConditionBasedFilter
+            {
+                Condition = "contains('${message}','HttpMessageHandler cleanup') or contains('${message}','Starting HttpMessageHandler cleanup cycle')",
+                Action = FilterResult.Ignore
+            });
+            config.LoggingRules.Add(consoleRule);
         }
 
         loggingBuilder.ClearProviders();

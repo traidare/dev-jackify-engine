@@ -14,7 +14,7 @@ using Wabbajack.Networking.Http.Interfaces;
 
 namespace Wabbajack.Networking.Http;
 
-public class ResumableDownloader(ILogger<ResumableDownloader> _logger, IHttpClientFactory _httpClientFactory) : IHttpDownloader
+public class ResumableDownloader(ILogger<ResumableDownloader> _logger, IHttpClientFactory _httpClientFactory, ITransferMetrics _metrics) : IHttpDownloader
 {
     public async Task<Hash> Download(HttpRequestMessage _msg, AbsolutePath _outputPath, IJob job, CancellationToken token)
     {
@@ -132,6 +132,7 @@ public class ResumableDownloader(ILogger<ResumableDownloader> _logger, IHttpClie
         while ((bytesRead = await responseStream.ReadAsync(buffer, token)) > 0)
         {
             await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), token);
+            _metrics.Record(bytesRead);
             bytesProcessed += bytesRead;
 
             if (shouldReportProgress && (bytesProcessed - lastReportedBytes) >= reportEveryXBytesProcessed)

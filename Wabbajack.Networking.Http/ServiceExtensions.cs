@@ -23,6 +23,7 @@ public static class ServiceExtensions
                 UseCookies = false // Reduce overhead
             });
         services.AddSingleton<IHttpDownloader, ResumableDownloader>();
+        services.AddSingleton<ITransferMetrics, TransferMetrics>();
         services.RemoveAll<IHttpMessageHandlerBuilderFilter>();
     }
 }

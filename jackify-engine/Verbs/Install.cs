@@ -19,6 +19,7 @@ using Wabbajack.Paths;
 using Wabbajack.Paths.IO;
 using Wabbajack.Services.OSIntegrated;
 using Wabbajack.VFS;
+using Wabbajack.Networking.Http.Interfaces;
 
 namespace Wabbajack.CLI.Verbs;
 
@@ -172,15 +173,17 @@ public class Install
 
         // Set up progress reporting with single-line updates
         var startTime = DateTime.UtcNow;
+        var metrics = _serviceProvider.GetService(typeof(ITransferMetrics)) as ITransferMetrics;
         Action<long, long> progressCallback = (processed, total) =>
         {
             var elapsed = DateTime.UtcNow - startTime;
             var speedMBps = elapsed.TotalSeconds > 0 ? (processed / 1024.0 / 1024.0) / elapsed.TotalSeconds : 0;
+            var totalMBps = metrics != null ? metrics.BytesPerSecondSmoothed / (1024.0 * 1024.0) : 0.0;
             var totalMB = total / 1024.0 / 1024.0;
             var processedMB = processed / 1024.0 / 1024.0;
             
             // Use single-line progress update instead of multi-line logging
-            ConsoleOutput.PrintProgressWithDuration($"Downloading {archive.Name} ({processedMB:F1}/{totalMB:F1}MB) - {speedMBps:F1}MB/s");
+            ConsoleOutput.PrintProgressWithDuration($"Downloading {archive.Name} ({processedMB:F1}/{totalMB:F1}MB) - {speedMBps:F1}MB/s Total: {totalMBps:F1}MB/s");
         };
 
         await _dispatcher.Download(archive, wabbajack, token, progressCallback);
