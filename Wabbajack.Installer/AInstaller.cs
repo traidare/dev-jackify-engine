@@ -219,7 +219,66 @@ public abstract class AInstaller<T>
         NextStep(Consts.StepPreparing, "Priming VFS", 0);
         _vfs.AddKnown(_configuration.ModList.Directives.OfType<FromArchive>().Select(d => d.ArchiveHashPath),
             HashedArchives);
-        await _vfs.BackfillMissing();
+
+        try
+        {
+            await _vfs.BackfillMissing();
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("Missing archive with hash"))
+        {
+            // Extract the hash from the error message and try to find the friendly name
+            var hashMatch = System.Text.RegularExpressions.Regex.Match(ex.Message, @"Missing archive with hash ([A-Za-z0-9+/=]+)");
+            if (hashMatch.Success)
+            {
+                try
+                {
+                    var missingHash = Hash.FromBase64(hashMatch.Groups[1].Value);
+                    var archive = ModList.Archives.FirstOrDefault(a => a.Hash == missingHash);
+                    var archiveName = archive?.Name ?? "Unknown";
+
+                    // Try to diagnose the issue
+                    string diagnostic = "";
+                    if (archive != null)
+                    {
+                        var expectedFile = _configuration.Downloads.Combine(archiveName);
+                        if (expectedFile.FileExists())
+                        {
+                            var actualSize = expectedFile.Size();
+                            if (actualSize != archive.Size)
+                            {
+                                diagnostic = $" File exists but wrong size: expected {archive.Size} bytes, found {actualSize} bytes (corrupted download).";
+                            }
+                            else
+                            {
+                                diagnostic = " File exists with correct size but wrong hash (corrupted or modified).";
+                            }
+                        }
+                        else
+                        {
+                            diagnostic = " File not found in downloads directory.";
+                        }
+                    }
+
+                    _logger.LogError("VFS priming failed: Archive '{ArchiveName}' (hash: {Hash}) not found in HashedArchives.{Diagnostic}",
+                        archiveName, missingHash, diagnostic);
+                    throw new InvalidOperationException($"Installation failed: Required archive '{archiveName}' could not be located.{diagnostic} " +
+                                                      "Please re-download this file and retry installation.", ex);
+                }
+                catch (Exception parseEx)
+                {
+                    _logger.LogError("Failed to parse hash from error message: {ParseError}", parseEx.Message);
+                    _logger.LogError("VFS priming failed due to missing archives. Installation cannot continue.");
+                    throw new InvalidOperationException("Installation failed: Required archives are missing from downloads directory. " +
+                                                      "Please ensure all files have been downloaded successfully before retrying installation.", ex);
+                }
+            }
+            else
+            {
+                _logger.LogError("VFS priming failed due to missing archives. Installation cannot continue.");
+                throw new InvalidOperationException("Installation failed: Required archives are missing from downloads directory. " +
+                                                  "Please ensure all files have been downloaded successfully before retrying installation.", ex);
+            }
+        }
     }
 
     public Task BuildFolderStructure()
