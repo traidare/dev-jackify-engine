@@ -2,17 +2,20 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
-## Version 0.3.16 - 2025-09-29 (DEVELOPMENT)
+## Version 0.3.16 - 2025-09-30
 ### Archive Extraction
 * **Sanity Check Fallback**: Added Proton 7z.exe fallback for case sensitivity extraction failures
 
 ### Download Command
 * **download-wabbajack-file**: Added CLI command to download .wabbajack files by machineURL
 
+### Texture Processing
+* **Enhanced Error Messages**: Improved texconv/texdiag error messages to include original texture file names and conversion parameters
+
 ### Logging
 * **Noise Reduction**: Suppress verbose "HttpMessageHandler cleanup" console logs in non-debug runs
 
-## Version 0.3.15 - 2025-09-18 (DEVELOPMENT)
+## Version 0.3.15 - 2025-09-18
 ### .wabbajack File Hash Verification Fix
 * **Hash Cache Issue**: Fixed corrupted .wabbajack files being used due to stale hash cache entries
 * **Fresh Hash Verification**: .wabbajack files now always verify actual file hash instead of using cached values
@@ -31,7 +34,7 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
 * **Foreign Character Coverage**: Added degree symbol `°` to the special character list used to trigger the Proton 7z.exe fallback
 * **User Report**: Handles files like `Mirror°.nif` correctly by routing extraction through Proton 7z.exe when needed
 
-## Version 0.3.14 - 2025-01-XX (DEVELOPMENT)
+## Version 0.3.14 - 2025-09-15
 ### Nexus API Error Handling Improvements
 * **404 Not Found Handling**: Added specific error messages for missing/removed Nexus mods with actionable user guidance
 * **Enhanced Error Logging**: Improved error reporting with ArchiveName, Game, ModID, and FileID context for better troubleshooting
