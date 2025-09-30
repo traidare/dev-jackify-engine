@@ -184,12 +184,21 @@ public class TexConvImageLoader : IImageLoader, IDisposable
         }
         
         _logger.LogDebug("Executing texconv command: {Command}", commandString);
-        _logger.LogDebug("TEXTURE_PROCESSING: {TempFile} (original: {OriginalFile}) -> {Format} {Width}x{Height} {MipMaps}mips", 
+        _logger.LogDebug("TEXTURE_PROCESSING: {TempFile} (original: {OriginalFile}) -> {Format} {Width}x{Height} {MipMaps}mips",
             from.FileName, originalFileName, format, w, h, mipMaps);
-        
-        await ph.Start();
-        
-        _logger.LogDebug("TEXTURE_COMPLETED: {TempFile} -> {Format} {Width}x{Height}", 
+
+        try
+        {
+            await ph.Start();
+        }
+        catch (Exception ex)
+        {
+            // Provide better context about which texture failed
+            throw new Exception($"Texture conversion failed for '{originalFileName}' (temp file: {from.FileName}) " +
+                              $"-> {format} {w}x{h} {mipMaps}mips. Original error: {ex.Message}", ex);
+        }
+
+        _logger.LogDebug("TEXTURE_COMPLETED: {TempFile} -> {Format} {Width}x{Height}",
             from.FileName, format, w, h);
     }
 
@@ -240,7 +249,8 @@ public class TexConvImageLoader : IImageLoader, IDisposable
         }
         catch (Exception ex)
         {
-            throw;
+            throw new Exception($"Failed to get texture information for '{path.FileName}' using texdiag.exe. " +
+                              $"Original error: {ex.Message}", ex);
         }
     }
     
