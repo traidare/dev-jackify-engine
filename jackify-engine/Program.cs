@@ -85,23 +85,18 @@ internal class Program
         
         config.AddRuleForAllLevels(fileTarget);
         
-        if (debugMode)
+        // Create console rule with HttpMessageHandler cleanup suppression (applies to all modes)
+        var consoleRule = debugMode
+            ? new NLog.Config.LoggingRule("*", NLog.LogLevel.Trace, NLog.LogLevel.Fatal, consoleTarget)
+            : new NLog.Config.LoggingRule("*", NLog.LogLevel.Info, NLog.LogLevel.Fatal, consoleTarget);
+
+        // Suppress noisy HttpMessageHandler cleanup messages in all modes
+        consoleRule.Filters.Add(new ConditionBasedFilter
         {
-            // In debug mode, show all log levels on console
-            config.AddRuleForAllLevels(consoleTarget);
-        }
-        else
-        {
-            // In non-debug mode, show info, warnings and errors on console
-            // Suppress noisy HttpMessageHandler cleanup messages from dependencies
-            var consoleRule = new NLog.Config.LoggingRule("*", NLog.LogLevel.Info, NLog.LogLevel.Fatal, consoleTarget);
-            consoleRule.Filters.Add(new ConditionBasedFilter
-            {
-                Condition = "contains('${message}','HttpMessageHandler cleanup') or contains('${message}','Starting HttpMessageHandler cleanup cycle')",
-                Action = FilterResult.Ignore
-            });
-            config.LoggingRules.Add(consoleRule);
-        }
+            Condition = "contains('${message}','HttpMessageHandler cleanup') or contains('${message}','Starting HttpMessageHandler cleanup cycle')",
+            Action = FilterResult.Ignore
+        });
+        config.LoggingRules.Add(consoleRule);
 
         loggingBuilder.ClearProviders();
         loggingBuilder.SetMinimumLevel(LogLevel.Trace);
