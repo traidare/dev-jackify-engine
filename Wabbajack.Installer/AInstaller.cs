@@ -717,8 +717,7 @@ public abstract class AInstaller<T>
         var toHash = ModList.Archives.Where(a => hashDict.ContainsKey(a.Size))
             .SelectMany(a => hashDict[a.Size]).ToList();
 
-        MaxStepProgress = toHash.Count;
-
+        NextStep(Consts.StepPreparing, "Hashing downloads", toHash.Count);
         _logger.LogInformation("{Duration} Found {count} total files, {hashedCount} matching filesize", ConsoleOutput.GetDurationTimestamp(), allFiles.Count,
             toHash.Count);
 
@@ -843,7 +842,7 @@ public abstract class AInstaller<T>
 
         var existingfiles = _configuration.Install.EnumerateFiles().ToHashSet();
 
-        NextStep(Consts.StepPreparing, "Looking for unmodified files", 0);
+        NextStep(Consts.StepPreparing, "Looking for unmodified files", indexed.Values.Count);
         await indexed.Values.PMapAllBatchedAsync(_limiter, async d =>
             {
                 // Bit backwards, but we want to return null for 
@@ -865,6 +864,7 @@ public abstract class AInstaller<T>
             })
             .Do(d =>
             {
+                UpdateProgress(1);
                 if (d != null)
                 {
                     indexed.Remove(d.To);

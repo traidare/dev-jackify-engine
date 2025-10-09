@@ -2,6 +2,14 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.3.17 - 2025-10-09
+### Google Drive Downloads
+* **Request URI Fix**: Fixed "Request URI is null" error in Google Drive downloader when form parsing fails or response isn't HTML
+* **Fallback Logic**: Added proper fallback to direct download URL when Google Drive form detection fails
+
+### User Experience
+* **Progress Indication**: Added progress indicators to "Hashing downloads" and "Looking for unmodified files" phases that previously showed no progress during large operations
+
 ## Version 0.3.16 - 2025-09-30
 ### Archive Extraction
 * **Sanity Check Fallback**: Added Proton 7z.exe fallback for case sensitivity extraction failures
