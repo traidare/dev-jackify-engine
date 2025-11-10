@@ -2,6 +2,29 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.3.18 - 2025-11-05
+### Archive Extraction Fix
+* **Proton Fallback**: Exit code 2 (fatal errors) now automatically retries with Proton 7z.exe for ZIP/7Z/RAR archives
+* **Reparse Point Support**: Fixes archives containing Windows symlinks/reparse points that Linux 7zz cannot handle
+* **Error Reporting**: Fixed 7zip stderr capture showing type names instead of actual error messages
+
+### Bandwidth Limiting (Throughput) Fix
+* **Effective Throttling**: Fixed download pipeline not honoring `MaxThroughput` from `resource_settings.json`
+* **Root Cause**: Downloader reported progress with `ReportNoWait`, bypassing the limiter
+* **Implementation**: Now reports byte deltas via throttling-aware `Report(...)` and flushes remaining bytes at completion
+* **Scope**: Applies to all HTTP downloads using the resumable downloader
+
+### Nexus Premium Error Messages
+* **Clear Non-Premium Detection**: Added prominent console error message when Nexus Premium is not detected (before downloads start)
+* **User Guidance**: Explains why downloads appear stuck at 0MB/s and provides options (purchase Premium or continue with manual downloads)
+* **403 Forbidden Handling**: Improved error message for 403 responses (edge case: Premium status changed or API rejection) to clearly indicate Premium requirement
+* **Single Warning**: Shows the Premium warning only once per session to avoid console spam
+
+### Download Failure Messaging
+* **Concise Errors**: Per-file failures now show archive name, source, and a usable URL without dumping stack traces
+* **Debug Detail**: Full exception details moved to debug logs for troubleshooting
+* **Non-Blocking**: Installer continues remaining downloads; failures are summarized at the end
+
 ## Version 0.3.17 - 2025-10-09
 ### Google Drive Downloads
 * **Request URI Fix**: Fixed "Request URI is null" error in Google Drive downloader when form parsing fails or response isn't HTML
@@ -124,7 +147,7 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
 * **Zero Overhead Design**: Normal archives (99.99%) continue using fast Linux 7zz extraction
 * **Path Resolution Fix**: Fixed KnownFolders.EntryPoint path construction causing double "publish" directory issue
 * **Archive Format Intelligence**: 7Z archives work perfectly (UTF-8 native), ZIP archives with encoding issues automatically use Proton
-* **Root Cause Resolution**: Solves Linux 7zz filename corruption (ö → �) while preserving performance
+* **Root Cause Resolution**: Solves Linux 7zz filename corruption (ö →) while preserving performance
 
 ### Manual Download System & Error Handling Improvements
 * **Manual Download Detection**: Complete system for detecting and handling files requiring manual download

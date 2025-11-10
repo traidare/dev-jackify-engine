@@ -423,6 +423,7 @@ public class FileExtractor
             int maxRetries = 2;
             int retryCount = 0;
             int exitCode = 0;
+            var errorLines = new List<string>();
 
             while (retryCount <= maxRetries)
             {
@@ -441,12 +442,22 @@ public class FileExtractor
                     await Task.Delay(1000, token);
                 }
 
-                var result = process.Output.Where(d => d.Type == ProcessHelper.StreamType.Output)
+                // Clear error lines for this attempt
+                errorLines.Clear();
+
+                var result = process.Output
                     .ForEachAsync(p =>
                     {
-                        var (_, line) = p;
+                        var (type, line) = p;
                         if (line == null)
                             return;
+
+                        // Capture stderr for error reporting
+                        if (type == ProcessHelper.StreamType.Error)
+                        {
+                            errorLines.Add(line);
+                            return;
+                        }
 
                         if (line.Length <= 4 || line[3] != '%') return;
 
@@ -456,9 +467,9 @@ public class FileExtractor
                         var newPosition = percentInt == 0 ? 0 : totalSize / 100 * percentInt;
                         var throughput = newPosition - oldPosition;
                         job.ReportNoWait((int) throughput);
-                        
+
                         progressFunction?.Invoke(Percent.FactoryPutInRange(lastPercent, 100));
-                        
+
                         lastPercent = percentInt;
                     }, token);
 
@@ -476,10 +487,8 @@ public class FileExtractor
             // Check for 7zip extraction errors
             if (exitCode != 0)
             {
-                // Collect error output for better diagnostics
-                var errorOutput = string.Join("\n", process.Output
-                    .Where(d => d.Type == ProcessHelper.StreamType.Error)
-                    .Select(d => d.Line));
+                // Use captured error output
+                var errorOutput = string.Join("\n", errorLines);
 
                 // Provide specific guidance based on exit code
                 string errorMessage = exitCode switch
@@ -492,9 +501,9 @@ public class FileExtractor
                     _ => $"Unknown error code {exitCode}"
                 };
 
-                _logger.LogError("7zip failed with exit code {exitCode} for {archive}: {errorMessage}", 
+                _logger.LogError("7zip failed with exit code {exitCode} for {archive}: {errorMessage}",
                     exitCode, source.FileName, errorMessage);
-                
+
                 if (!string.IsNullOrEmpty(errorOutput))
                 {
                     _logger.LogError("7zip error output: {errorOutput}", errorOutput);
@@ -505,14 +514,39 @@ public class FileExtractor
                 {
                     var availableSpace = new DriveInfo(Path.GetPathRoot(dest.Path.ToString()) ?? "/").AvailableFreeSpace;
                     var archiveSize = source.Size();
-                    
-                    _logger.LogError("Archive size: {archiveSize} bytes, Available disk space: {availableSpace} bytes", 
+
+                    _logger.LogError("Archive size: {archiveSize} bytes, Available disk space: {availableSpace} bytes",
                         archiveSize, availableSpace);
-                    
+
                     if (availableSpace < archiveSize * 2) // Need at least 2x space for extraction
                     {
-                        _logger.LogError("Insufficient disk space for extraction. Need at least {neededSpace} bytes, have {availableSpace} bytes", 
+                        _logger.LogError("Insufficient disk space for extraction. Need at least {neededSpace} bytes, have {availableSpace} bytes",
                             archiveSize * 2, availableSpace);
+                    }
+                }
+
+                // Exit code 2 (fatal error) on Linux can indicate issues Linux 7zz can't handle
+                // (reparse points, symlinks, etc.) that Windows 7z.exe via Proton can handle
+                bool shouldTryProtonFallback = RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
+                                               exitCode == 2 &&
+                                               (sFn.Name.FileName.Extension == Extension.FromPath(".zip") ||
+                                                sFn.Name.FileName.Extension == Extension.FromPath(".7z") ||
+                                                sFn.Name.FileName.Extension == Extension.FromPath(".rar"));
+
+                if (shouldTryProtonFallback)
+                {
+                    _logger.LogInformation("7zip exit code 2 on {archive}, attempting Proton 7z.exe fallback", source.FileName);
+
+                    try
+                    {
+                        var protonResults = await GatheringExtractWithProton7Zip(sFn, shouldExtract, mapfn, onlyFiles, token, progressFunction);
+                        _logger.LogInformation("Proton 7z.exe fallback successful for {archive} (reparse point handling)", source.FileName);
+                        return protonResults;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Proton 7z.exe fallback failed for {archive}", source.FileName);
+                        // Fall through to original exception
                     }
                 }
 

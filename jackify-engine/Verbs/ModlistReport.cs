@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Invocation;
@@ -13,7 +14,9 @@ using Microsoft.Extensions.Logging;
 using Nettle;
 using Wabbajack.CLI.Builder;
 using Wabbajack.Common;
+using Wabbajack.DTOs;
 using Wabbajack.DTOs.Directives;
+using Wabbajack.DTOs.DownloadStates;
 using Wabbajack.DTOs.JsonConverters;
 using Wabbajack.Installer;
 using Wabbajack.Paths;
@@ -41,7 +44,12 @@ public class ModlistReport
     
     private static async Task<string> ReportTemplate(object o)
     {
-        var data = await (typeof(ModlistReport).Assembly.GetManifestResourceStream("Wabbajack.CLI.Resources.ModlistReport.html")!).ReadAllAsync();
+        var asm = typeof(ModlistReport).Assembly;
+        var name = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith("ModlistReport.html"));
+        if (name == null)
+            throw new FileNotFoundException("Embedded resource 'ModlistReport.html' not found in assembly resources.");
+        await using var stream = asm.GetManifestResourceStream(name)!;
+        var data = await stream.ReadAllAsync();
         var func = NettleEngine.GetCompiler().Compile(Encoding.UTF8.GetString(data));
         return await func(o, CancellationToken.None);
     }
@@ -58,8 +66,24 @@ public class ModlistReport
             patchSizes = zip.Entries.ToDictionary(e => e.Name, e => e.Length);
         }
 
-        var archives = modlist.Archives.ToDictionary(a => a.Hash, a => a.Name);
+        var archivesByHash = modlist.Archives.ToDictionary(a => a.Hash, a => a.Name);
         var bsas = modlist.Directives.OfType<CreateBSA>().ToDictionary(bsa => bsa.TempID.ToString());
+
+        var archiveEntries = modlist.Archives
+            .Select(a => new {
+                Display = a.State is IMetaState ms && !string.IsNullOrEmpty(ms.Name) ? ms.Name : a.Name,
+                File = a.Name,
+                Url = a.State switch
+                {
+                    IMetaState ims => ims.LinkUrl,
+                    Manual m => m.Url,
+                    Http h => h.Url,
+                    Mega me => me.Url,
+                    MediaFire mf => mf.Url,
+                    _ => null
+                }
+            })
+            .ToArray();
 
         var inlinedData = modlist.Directives.OfType<InlineFile>()
             .Select(e => new
@@ -87,7 +111,7 @@ public class ModlistReport
         var patchData = modlist.Directives.OfType<PatchedFromArchive>()
             .Select(e => new
             {
-                From = $"<i> {archives[e.ArchiveHashPath.Hash]} </i> | {string.Join(" | ", e.ArchiveHashPath.Parts.Select(e => e.ToString()))}",
+                From = $"<i> {archivesByHash[e.ArchiveHashPath.Hash]} </i> | {string.Join(" | ", e.ArchiveHashPath.Parts.Select(e => e.ToString()))}",
                 To = FixupTo(e.To),
                 Id = e.PatchID.ToString(),
                 PatchSize = patchSizes[e.PatchID.ToString()].ToFileSizeString(),
@@ -102,7 +126,8 @@ public class ModlistReport
             InlinedData = inlinedData,
             TotalPatchSize = patchData.Sum(i => i.PatchSizeInt).ToFileSizeString(),
             PatchData = patchData,
-            WabbajackSize = input.Size().ToFileSizeString()
+            WabbajackSize = input.Size().ToFileSizeString(),
+            ArchiveEntries = archiveEntries
         });
 
         var path = input.WithExtension(Ext.Html);

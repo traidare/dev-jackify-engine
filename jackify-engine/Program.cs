@@ -9,7 +9,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NLog.Extensions.Logging;
 using NLog.Targets;
-using NLog.Filters;
 using Octokit;
 using Wabbajack.DTOs.Interventions;
 using Wabbajack.Networking.Http;
@@ -84,19 +83,18 @@ internal class Program
         };
         
         config.AddRuleForAllLevels(fileTarget);
-        
-        // Create console rule with HttpMessageHandler cleanup suppression (applies to all modes)
-        var consoleRule = debugMode
-            ? new NLog.Config.LoggingRule("*", NLog.LogLevel.Trace, NLog.LogLevel.Fatal, consoleTarget)
-            : new NLog.Config.LoggingRule("*", NLog.LogLevel.Info, NLog.LogLevel.Fatal, consoleTarget);
 
-        // Suppress noisy HttpMessageHandler cleanup messages in all modes
-        consoleRule.Filters.Add(new ConditionBasedFilter
+        if (debugMode)
         {
-            Condition = "contains('${message}','HttpMessageHandler cleanup') or contains('${message}','Starting HttpMessageHandler cleanup cycle')",
-            Action = FilterResult.Ignore
-        });
-        config.LoggingRules.Add(consoleRule);
+            // In debug mode, show all log levels on console
+            config.AddRuleForAllLevels(consoleTarget);
+        }
+        else
+        {
+            // In non-debug mode, show info, warnings and errors on console
+            var consoleRule = new NLog.Config.LoggingRule("*", NLog.LogLevel.Info, NLog.LogLevel.Fatal, consoleTarget);
+            config.LoggingRules.Add(consoleRule);
+        }
 
         loggingBuilder.ClearProviders();
         loggingBuilder.SetMinimumLevel(LogLevel.Trace);

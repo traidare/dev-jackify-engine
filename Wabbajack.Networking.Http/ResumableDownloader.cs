@@ -137,9 +137,18 @@ public class ResumableDownloader(ILogger<ResumableDownloader> _logger, IHttpClie
 
             if (shouldReportProgress && (bytesProcessed - lastReportedBytes) >= reportEveryXBytesProcessed)
             {
-                job.ReportNoWait((int)bytesProcessed);
+                var delta = (int)(bytesProcessed - lastReportedBytes);
+                await job.Report(delta, token);
                 lastReportedBytes = bytesProcessed;
             }
+        }
+
+        // Report any remaining progress that didn't meet the threshold to ensure limiter accounts for all bytes
+        if (bytesProcessed > lastReportedBytes)
+        {
+            var delta = (int)(bytesProcessed - lastReportedBytes);
+            await job.Report(delta, token);
+            lastReportedBytes = bytesProcessed;
         }
 
         return filePath;

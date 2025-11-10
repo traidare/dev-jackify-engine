@@ -534,32 +534,46 @@ public abstract class AInstaller<T>
             }
         }
 
-        // Professional bandwidth monitoring setup
-        var bandwidthMonitor = new BandwidthMonitor(sampleWindowSeconds: 5); // 5-second rolling window
-        var completedCount = 0;
         var nonManualCount = missing.Count(a => a.State is not Manual);
-        
-        // Update display every 1 second for professional feel
-        var displayCts = new CancellationTokenSource();
-        var displayTask = Task.Run(async () =>
+
+        // Only setup bandwidth monitoring and progress display if there are automated downloads
+        BandwidthMonitor? bandwidthMonitor = null;
+        CancellationTokenSource? displayCts = null;
+        Task? displayTask = null;
+        var completedCount = 0;
+
+        if (nonManualCount > 0)
         {
-            while (!displayCts.Token.IsCancellationRequested)
+            // Professional bandwidth monitoring setup
+            bandwidthMonitor = new BandwidthMonitor(sampleWindowSeconds: 5); // 5-second rolling window
+
+            // Update display every 1 second for professional feel
+            displayCts = new CancellationTokenSource();
+            displayTask = Task.Run(async () =>
             {
-                try
+                while (!displayCts.Token.IsCancellationRequested)
                 {
-                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
-                    
-                    var currentBandwidthMBps = bandwidthMonitor.GetCurrentBandwidthMBps();
-                    var currentCompleted = Interlocked.CompareExchange(ref completedCount, 0, 0);
-                    
-                    ConsoleOutput.PrintProgressWithDuration($"Downloading Mod Archives ({currentCompleted}/{nonManualCount}) - {currentBandwidthMBps:F1}MB/s");
+                    try
+                    {
+                        await Task.Delay(1000, displayCts.Token); // Update every 1 second
+
+                        var currentBandwidthMBps = bandwidthMonitor.GetCurrentBandwidthMBps();
+                        var currentCompleted = Interlocked.CompareExchange(ref completedCount, 0, 0);
+
+                        ConsoleOutput.PrintProgressWithDuration($"Downloading Mod Archives ({currentCompleted}/{nonManualCount}) - {currentBandwidthMBps:F1}MB/s");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                 }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-            }
-        }, displayCts.Token);
+            }, displayCts.Token);
+        }
+        else if (missing.Any(a => a.State is Manual))
+        {
+            // All downloads are manual - inform user
+            ConsoleOutput.PrintWithDuration("All remaining downloads require Nexus Premium");
+        }
 
         await missing
             .Shuffle()
@@ -579,26 +593,40 @@ public abstract class AInstaller<T>
                 }
                 catch (Exception ex)
                 {
-                    // Provide detailed error information about which mod/file failed
+                    // Provide concise user-facing context and a URL in non-debug, with full details in debug
                     var modInfo = GetModInfoFromArchive(archive);
-                    _logger.LogError("Failed to download '{FileName}'{ModInfo}: {ErrorMessage}", 
-                        archive.Name, 
-                        modInfo, 
-                        ex.Message);
+                    var sourceUrl = GetSourceUrlFromArchive(archive);
+                    if (!string.IsNullOrEmpty(sourceUrl))
+                    {
+                        _logger.LogError("Failed to download '{FileName}'{ModInfo} — {ErrorMessage}\n    URL: {Url}",
+                            archive.Name,
+                            modInfo,
+                            ex.Message,
+                            sourceUrl);
+                    }
+                    else
+                    {
+                        _logger.LogError("Failed to download '{FileName}'{ModInfo} — {ErrorMessage}",
+                            archive.Name,
+                            modInfo,
+                            ex.Message);
+                    }
                     _logger.LogDebug(ex, "Full download error details for {FileName}", archive.Name);
-                    throw; // Re-throw to maintain original behavior
+                    // Do not rethrow; continue other downloads and let the end-of-phase summary report remaining failures
                 }
             });
-            
-        // Clean up display task
-        displayCts.Cancel();
-        try { await displayTask; } catch (OperationCanceledException) { }
-        
-        // Clear the progress line after downloads complete
-        ConsoleOutput.ClearProgressLine();
-        
-        // Clean up bandwidth monitor
-        bandwidthMonitor.Dispose();
+
+        // Clean up display task and bandwidth monitor if they were created
+        if (displayCts != null && displayTask != null)
+        {
+            displayCts.Cancel();
+            try { await displayTask; } catch (OperationCanceledException) { }
+
+            // Clear the progress line after downloads complete
+            ConsoleOutput.ClearProgressLine();
+        }
+
+        bandwidthMonitor?.Dispose();
     }
 
     private string GetModInfoFromArchive(Archive archive)
@@ -627,6 +655,35 @@ public abstract class AInstaller<T>
         catch
         {
             return "";
+        }
+    }
+
+    private string GetSourceUrlFromArchive(Archive archive)
+    {
+        try
+        {
+            switch (archive.State)
+            {
+                case DTOs.DownloadStates.Nexus nexus:
+                    var nx = nexus.Game.MetaData().NexusName;
+                    return $"https://www.nexusmods.com/{nx}/mods/{nexus.ModID}?tab=files&file_id={nexus.FileID}";
+                case DTOs.DownloadStates.GoogleDrive gdrive:
+                    return $"https://drive.google.com/uc?id={gdrive.Id}&export=download";
+                case DTOs.DownloadStates.Http http:
+                    return http.Url.ToString();
+                case DTOs.DownloadStates.Mega mega:
+                    return mega.Url.ToString();
+                case DTOs.DownloadStates.MediaFire mediafire:
+                    return mediafire.Url.ToString();
+                case DTOs.DownloadStates.WabbajackCDN cdn:
+                    return cdn.Url.ToString();
+                default:
+                    return string.Empty;
+            }
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 
@@ -716,6 +773,22 @@ public abstract class AInstaller<T>
         _logger.LogInformation("{Duration} Linking archives to downloads", ConsoleOutput.GetDurationTimestamp());
         var toHash = ModList.Archives.Where(a => hashDict.ContainsKey(a.Size))
             .SelectMany(a => hashDict[a.Size]).ToList();
+
+        // Log any archives that weren't found in the filesystem
+        var missingArchives = ModList.Archives.Where(a => !hashDict.ContainsKey(a.Size)).ToList();
+        if (missingArchives.Any())
+        {
+            _logger.LogDebug("{Duration} {count} archives not found by size match:", ConsoleOutput.GetDurationTimestamp(), missingArchives.Count);
+            foreach (var missing in missingArchives.Take(10))
+            {
+                _logger.LogDebug("  - {name} (hash: {hash}, size: {size}, state: {state})",
+                    missing.Name, missing.Hash, missing.Size, missing.State.GetType().Name);
+            }
+            if (missingArchives.Count > 10)
+            {
+                _logger.LogDebug("  ... and {more} more", missingArchives.Count - 10);
+            }
+        }
 
         NextStep(Consts.StepPreparing, "Hashing downloads", toHash.Count);
         _logger.LogInformation("{Duration} Found {count} total files, {hashedCount} matching filesize", ConsoleOutput.GetDurationTimestamp(), allFiles.Count,

@@ -118,6 +118,8 @@ public class NexusDownloader : ADownloader<Nexus>, IUrlDownloader
 
     public override Priority Priority => Priority.Normal;
 
+    private static bool _hasShownPremiumWarning = false;
+
     public override async Task<Hash> Download(Archive archive, Nexus state, AbsolutePath destination,
         IJob job, CancellationToken token)
     {
@@ -130,7 +132,25 @@ public class NexusDownloader : ADownloader<Nexus>, IUrlDownloader
             }
             else
             {
-                _logger.LogInformation("User is not Premium, falling back to manual download for {ArchiveName} (Game: {Game}, ModID: {ModID}, FileID: {FileID})", 
+                if (!_hasShownPremiumWarning)
+                {
+                    _logger.LogCritical("");
+                    _logger.LogCritical("╔══════════════════════════════════════════════════════════════════════════════╗");
+                    _logger.LogCritical("║                    NEXUS PREMIUM REQUIRED FOR DOWNLOADS                       ║");
+                    _logger.LogCritical("╚══════════════════════════════════════════════════════════════════════════════╝");
+                    _logger.LogCritical("");
+                    _logger.LogCritical("Your Nexus account does not have Premium membership. Nexus Premium is required");
+                    _logger.LogCritical("for automated downloads. Downloads will appear stuck at 0MB/s because they require");
+                    _logger.LogCritical("manual intervention.");
+                    _logger.LogCritical("");
+                    _logger.LogCritical("Options:");
+                    _logger.LogCritical("  1. Purchase Nexus Premium to enable automated downloads");
+                    _logger.LogCritical("  2. Continue with manual downloads (installation will show a summary at the end)");
+                    _logger.LogCritical("");
+                    _hasShownPremiumWarning = true;
+                }
+                
+                _logger.LogWarning("Nexus Premium required: {ArchiveName} (Game: {Game}, ModID: {ModID}, FileID: {FileID}) - falling back to manual download", 
                     archive.Name, state.Game, state.ModID, state.FileID);
             }
             return await DownloadManually(archive, state, destination, job, token);
@@ -172,8 +192,28 @@ public class NexusDownloader : ADownloader<Nexus>, IUrlDownloader
                 
                 if (ex.StatusCode == HttpStatusCode.Forbidden)
                 {
-                    _logger.LogInformation("Nexus API returned {StatusCode} for {ArchiveName} (ModID: {ModID}, FileID: {FileID}), falling back to manual download", 
-                        ex.StatusCode, archive.Name, state.ModID, state.FileID);
+                    if (!_hasShownPremiumWarning)
+                    {
+                        _logger.LogCritical("");
+                        _logger.LogCritical("╔══════════════════════════════════════════════════════════════════════════════╗");
+                        _logger.LogCritical("║                    NEXUS PREMIUM REQUIRED FOR DOWNLOADS                       ║");
+                        _logger.LogCritical("╚══════════════════════════════════════════════════════════════════════════════╝");
+                        _logger.LogCritical("");
+                        _logger.LogCritical("Nexus API returned 403 Forbidden. This typically means:");
+                        _logger.LogCritical("  • Your Nexus account does not have Premium membership");
+                        _logger.LogCritical("  • Nexus Premium is required for automated downloads");
+                        _logger.LogCritical("");
+                        _logger.LogCritical("Downloads will appear stuck at 0MB/s because they require manual intervention.");
+                        _logger.LogCritical("");
+                        _logger.LogCritical("Options:");
+                        _logger.LogCritical("  1. Purchase Nexus Premium to enable automated downloads");
+                        _logger.LogCritical("  2. Continue with manual downloads (installation will show a summary at the end)");
+                        _logger.LogCritical("");
+                        _hasShownPremiumWarning = true;
+                    }
+                    
+                    _logger.LogWarning("Nexus API returned 403 Forbidden for {ArchiveName} (ModID: {ModID}, FileID: {FileID}), falling back to manual download", 
+                        archive.Name, state.ModID, state.FileID);
                     return await DownloadManually(archive, state, destination, job, token);
                 }
                 else if (ex.StatusCode == HttpStatusCode.NotFound)

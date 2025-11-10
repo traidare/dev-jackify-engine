@@ -116,13 +116,11 @@ public class ListModlists
                     var displayAuthor = string.IsNullOrEmpty(modlist.Author) ? "Unknown" : modlist.Author;
                     var line = $"{displayTitle} ({displayAuthor}) - {modlist.Game.MetaData().HumanFriendlyGameName} - {sizeDisplay} - {modlist.NamespacedName}";
                     Console.WriteLine(line);
-                    _logger.LogInformation("{Title} ({Author}) - {Game} - {Size} - {MachineURL}", displayTitle, displayAuthor, modlist.Game.MetaData().HumanFriendlyGameName, sizeDisplay, modlist.NamespacedName);
                 }
                 else
                 {
                     var line = $"{displayTitle} - {modlist.Game.MetaData().HumanFriendlyGameName} - {sizeDisplay} - {modlist.NamespacedName}";
                     Console.WriteLine(line);
-                    _logger.LogInformation("{Title} - {Game} - {Size} - {MachineURL}", displayTitle, modlist.Game.MetaData().HumanFriendlyGameName, sizeDisplay, modlist.NamespacedName);
                 }
             }
             else
@@ -130,14 +128,10 @@ public class ListModlists
                 if (showAuthor)
                 {
                     var displayAuthor = string.IsNullOrEmpty(modlist.Author) ? "Unknown" : modlist.Author;
-                    var line = $"{displayTitle} ({displayAuthor}) - {modlist.Game.MetaData().HumanFriendlyGameName} - {sizeDisplay}";
-                    Console.WriteLine(line);
                     _logger.LogInformation("{Title} ({Author}) - {Game} - {Size}", displayTitle, displayAuthor, modlist.Game.MetaData().HumanFriendlyGameName, sizeDisplay);
                 }
                 else
                 {
-                    var line = $"{displayTitle} - {modlist.Game.MetaData().HumanFriendlyGameName} - {sizeDisplay}";
-                    Console.WriteLine(line);
                     _logger.LogInformation("{Title} - {Game} - {Size}", displayTitle, modlist.Game.MetaData().HumanFriendlyGameName, sizeDisplay);
                 }
             }

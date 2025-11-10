@@ -145,26 +145,26 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         var missing = ModList.Archives.Where(a => !HashedArchives.ContainsKey(a.Hash)).ToList();
         var nonManualMissing = missing.Where(a => a.State is not Manual && a.State is not GameFileSource).ToList();
         
-        // Auto-cleanup corrupted files and retry once
+        // Auto-cleanup files with hash mismatches and retry once
         if (nonManualMissing.Count > 0)
         {
-            _logger.LogInformation("Detected {count} files with hash mismatches. Checking for corrupted downloads...", nonManualMissing.Count);
-            
+            _logger.LogInformation("Detected {count} files with hash mismatches. Checking downloads...", nonManualMissing.Count);
+
             var cleanedFiles = new List<Archive>();
             foreach (var archive in nonManualMissing)
             {
                 var expectedPath = _configuration.Downloads.Combine(archive.Name);
                 if (expectedPath.FileExists())
                 {
-                    _logger.LogWarning("Corrupted file detected: {name}. Deleting and re-downloading...", archive.Name);
+                    _logger.LogWarning("Hash mismatch for {name}, re-downloading...", archive.Name);
                     expectedPath.Delete();
                     cleanedFiles.Add(archive);
                 }
             }
-            
+
             if (cleanedFiles.Count > 0)
             {
-                _logger.LogInformation("Attempting to re-download {count} corrupted files...", cleanedFiles.Count);
+                _logger.LogInformation("Re-downloading {count} files with hash mismatches...", cleanedFiles.Count);
                 await DownloadMissingArchives(cleanedFiles, token);
                 await HashArchives(token);
                 
@@ -411,28 +411,21 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
     private async Task BuildBSAs(CancellationToken token)
     {
-        // Add blank line before Building BSAs section
-        Console.WriteLine();
-        
         var bsas = ModList.Directives.OfType<CreateBSA>().ToList();
         _logger.LogInformation("{Duration} Generating debug caches", ConsoleOutput.GetDurationTimestamp());
         var indexedByDestination = UnoptimizedDirectives.ToDictionary(d => d.To);
         _logger.LogInformation("{Duration} Building {bsasCount} bsa files", ConsoleOutput.GetDurationTimestamp(), bsas.Count);
         NextStep("Installing", "Building BSAs", bsas.Count);
 
-        int currentBsaIndex = 0;
         foreach (var bsa in bsas)
         {
-            currentBsaIndex++;
             UpdateProgress(1);
-            int totalFiles = bsa.FileStates.Length;
-            
-            // Use single-line progress with BSA counter and file count
-            ConsoleOutput.PrintProgressWithDuration($"Building BSA {currentBsaIndex}/{bsas.Count}: {bsa.To.FileName} ({totalFiles} files)");
-            
+            _logger.LogInformation("{Duration} Building {bsaTo}", ConsoleOutput.GetDurationTimestamp(), bsa.To.FileName);
+
             var sourceDir = _configuration.Install.Combine(Consts.BSACreationDir, bsa.TempID);
 
             await using var a = BSADispatch.CreateBuilder(bsa.State, _manager);
+
             var streams = await bsa.FileStates.PMapAllBatchedAsync(_limiter, async state =>
             {
                 // Try the normal path first
@@ -444,14 +437,13 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                     var backslashPath = state.Path.ToString().Replace("/", "\\");
                     filePath = sourceDir.Combine(backslashPath.ToRelativePath());
                 }
-                
+
                 var fs = filePath.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
                 await a.AddFile(state, fs, token);
                 return fs;
             }).ToList();
 
-            // Update progress for writing phase with BSA counter
-            ConsoleOutput.PrintProgressWithDuration($"Writing BSA {currentBsaIndex}/{bsas.Count}: {bsa.To.FileName}");
+            _logger.LogInformation("{Duration} Writing {bsaTo}", ConsoleOutput.GetDurationTimestamp(), bsa.To);
             var outPath = _configuration.Install.Combine(bsa.To);
 
             await using (var outStream = outPath.Open(FileMode.Create, FileAccess.Write, FileShare.None))
@@ -463,8 +455,7 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
             await FileHashCache.FileHashWriteCache(outPath, bsa.Hash);
 
-            // Update progress for verification phase with BSA counter
-            ConsoleOutput.PrintProgressWithDuration($"Verifying BSA {currentBsaIndex}/{bsas.Count}: {bsa.To.FileName}");
+            _logger.LogInformation("{Duration} Verifying {bsaTo}", ConsoleOutput.GetDurationTimestamp(), bsa.To);
             var reader = await BSADispatch.Open(outPath);
             var results = await reader.Files.PMapAllBatchedAsync(_limiter, async state =>
             {
@@ -477,15 +468,11 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                 //DX10Files are lossy
                 if (astate is not BA2DX10File && srcDirective.IsDeterministic)
                     ThrowOnNonMatchingHash(bsa, srcDirective, astate, hash);
+
                 return (srcDirective, hash);
             }).ToHashSet();
         }
-        
-        // Clear the progress line after BSA building is complete
-        ConsoleOutput.ClearProgressLine();
 
-        // Add newline before cleanup section for proper separation
-        Console.WriteLine();
         NextStep(Consts.StepFinished, "Removing Temporary Files", 2);
         
         var bsaDir = _configuration.Install.Combine(Consts.BSACreationDir);
