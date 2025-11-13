@@ -187,12 +187,56 @@ public class TexConvImageLoader : IImageLoader, IDisposable
         _logger.LogDebug("TEXTURE_PROCESSING: {TempFile} (original: {OriginalFile}) -> {Format} {Width}x{Height} {MipMaps}mips",
             from.FileName, originalFileName, format, w, h, mipMaps);
 
+        // Capture output for error diagnostics (only if error occurs)
+        var outputLines = new ConcurrentStack<string>();
+        var errorLines = new ConcurrentStack<string>();
+        using var outputSub = ph.Output.Where(p => p.Type == ProcessHelper.StreamType.Output)
+            .Select(p => p.Line)
+            .Subscribe(l => outputLines.Push(l));
+        using var errorSub = ph.Output.Where(p => p.Type == ProcessHelper.StreamType.Error)
+            .Select(p => p.Line)
+            .Subscribe(l => errorLines.Push(l));
+
         try
         {
             await ph.Start();
         }
         catch (Exception ex)
         {
+            // Check if this is a texconv.exe error (Exit Code 1)
+            var isTexConvError = ex.Message.Contains("texconv.exe") && 
+                                 (ex.Message.Contains("Exit Code 1") || ex.Message.Contains("Exit Code") || 
+                                  ex.InnerException?.Message.Contains("Exit Code") == true);
+            
+            if (isTexConvError)
+            {
+                // Collect captured output for detailed error logging
+                var stdout = string.Join("\n", outputLines.Reverse());
+                var stderr = string.Join("\n", errorLines.Reverse());
+                
+                // Log detailed error information at Error level (visible to users)
+                _logger.LogError("TEXCONV_ERROR_DETAILS: Texture conversion failed for '{OriginalFile}' (temp: {TempFile})",
+                    originalFileName, from.FileName);
+                _logger.LogError("TEXCONV_ERROR_DETAILS: Target format: {Format} {Width}x{Height} {MipMaps}mips",
+                    format, w, h, mipMaps);
+                _logger.LogError("TEXCONV_ERROR_DETAILS: Command: {Command}", commandString);
+                
+                if (!string.IsNullOrWhiteSpace(stderr))
+                {
+                    _logger.LogError("TEXCONV_ERROR_DETAILS: texconv.exe stderr:\n{Stderr}", stderr);
+                }
+                
+                if (!string.IsNullOrWhiteSpace(stdout))
+                {
+                    _logger.LogError("TEXCONV_ERROR_DETAILS: texconv.exe stdout:\n{Stdout}", stdout);
+                }
+                
+                if (string.IsNullOrWhiteSpace(stderr) && string.IsNullOrWhiteSpace(stdout))
+                {
+                    _logger.LogError("TEXCONV_ERROR_DETAILS: No output captured from texconv.exe (process may have failed before producing output)");
+                }
+            }
+            
             // Provide better context about which texture failed
             throw new Exception($"Texture conversion failed for '{originalFileName}' (temp file: {from.FileName}) " +
                               $"-> {format} {w}x{h} {mipMaps}mips. Original error: {ex.Message}", ex);

@@ -254,7 +254,10 @@ public class NexusApi
         {
             if (Environment.GetEnvironmentVariable("NEXUS_API_KEY") is { } apiKey)
             {
-                return (true, apiKey);
+                // Detect OAuth token: JWT tokens start with "eyJ" (Base64 encoded JSON header)
+                // If it's an OAuth token, use Bearer authentication; otherwise use API key
+                var isOAuthToken = apiKey.StartsWith("eyJ", StringComparison.Ordinal);
+                return (IsApiKey: !isOAuthToken, apiKey);
             }
         }
 
