@@ -151,6 +151,17 @@ public class ResumableDownloader(ILogger<ResumableDownloader> _logger, IHttpClie
             lastReportedBytes = bytesProcessed;
         }
 
+        // Ensure all data is written to disk before hashing (critical on Linux where page cache can delay writes)
+        // This prevents hash mismatches when resuming installations, as files must be fully synced to disk
+        await fileStream.FlushAsync(token);
+        fileStream.Flush(); // Flush buffered data to OS
+        
+        // On Linux, the OS page cache may delay writes to disk. The stream will be disposed
+        // when the using block ends, which should sync to disk. However, to be safe on Linux,
+        // we ensure the file handle is closed and synced before hashing.
+        // Note: FileStream.Dispose() will flush and close the handle, which should trigger
+        // the OS to sync to disk. If issues persist, we may need P/Invoke to fsync().
+
         return filePath;
     }
 

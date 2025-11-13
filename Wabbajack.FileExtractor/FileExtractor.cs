@@ -260,39 +260,6 @@ public class FileExtractor
                 }
             }
 
-            // Check if we should attempt a broader Proton fallback for case sensitivity or other extraction issues
-            bool shouldTryBroaderFallback = RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
-                                           (sFn.Name.FileName.Extension == Extension.FromPath(".zip") ||
-                                            sFn.Name.FileName.Extension == Extension.FromPath(".7z") ||
-                                            sFn.Name.FileName.Extension == Extension.FromPath(".rar")) &&
-                                           !couldBeForeignCharIssue; // Only if we didn't already try the foreign char fallback
-
-            if (shouldTryBroaderFallback)
-            {
-                _logger.LogInformation("Attempting Proton 7z.exe fallback for potential case sensitivity issue in {ArchiveName} ({ResultCount}/{ExpectedCount} files)",
-                    sFn.Name.FileName, results.Count, onlyFiles.Count);
-
-                try
-                {
-                    var protonResults = await GatheringExtractWithProton7Zip(sFn, shouldExtract, mapfn, onlyFiles, token, progressFunction);
-                    if (protonResults.Count == onlyFiles.Count)
-                    {
-                        _logger.LogInformation("Proton 7z.exe fallback successful for {ArchiveName}: {Count}/{ExpectedCount} files extracted",
-                            sFn.Name.FileName, protonResults.Count, onlyFiles.Count);
-                        return protonResults;
-                    }
-                    else
-                    {
-                        _logger.LogError("Proton 7z.exe fallback still has count mismatch for {ArchiveName}: {Count}/{ExpectedCount}",
-                            sFn.Name.FileName, protonResults.Count, onlyFiles.Count);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Proton 7z.exe broader fallback failed for {ArchiveName}", sFn.Name.FileName);
-                }
-            }
-
             // If we get here, either no fallback was attempted or it failed
             throw new Exception(
                 $"Sanity check error extracting {sFn.Name} - {results.Count} results, expected {onlyFiles.Count}. This is a critical extraction failure that must be resolved.");
@@ -545,8 +512,42 @@ public class FileExtractor
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Proton 7z.exe fallback failed for {archive}", source.FileName);
-                        // Fall through to original exception
+                        _logger.LogError(ex, "Proton 7z.exe fallback also failed for {archive}", source.FileName);
+                        
+                        // Both Linux 7zz and Proton 7z.exe failed - provide user-friendly error message
+                        var archiveName = source.FileName.ToString();
+                        var downloadsPath = source.Parent.ToString();
+                        
+                        _logger.LogError("");
+                        _logger.LogError("═══════════════════════════════════════════════════════════════");
+                        _logger.LogError("Archive extraction failed with both Linux 7zz and Proton 7z.exe");
+                        _logger.LogError("═══════════════════════════════════════════════════════════════");
+                        _logger.LogError("Archive: {ArchiveName}", archiveName);
+                        _logger.LogError("Location: {DownloadsPath}", downloadsPath);
+                        _logger.LogError("");
+                        _logger.LogError("This archive could not be extracted by either extraction method.");
+                        _logger.LogError("Possible causes:");
+                        _logger.LogError("  • Archive file is corrupted or incomplete");
+                        _logger.LogError("  • Archive format incompatibility");
+                        _logger.LogError("  • File permissions issue");
+                        _logger.LogError("");
+                        _logger.LogError("Recommended solution:");
+                        _logger.LogError("  1. Manually delete the archive from your downloads folder:");
+                        _logger.LogError("     {ArchivePath}", source.ToString());
+                        _logger.LogError("  2. Re-run the installation to re-download the archive");
+                        _logger.LogError("");
+                        _logger.LogError("Note: Some archives (like Synthesis.zip) use the same filename");
+                        _logger.LogError("across different versions. If you have an old version, deleting");
+                        _logger.LogError("it will force a fresh download of the correct version.");
+                        _logger.LogError("═══════════════════════════════════════════════════════════════");
+                        _logger.LogError("");
+                        
+                        // Fall through to throw exception with clear message
+                        throw new InvalidOperationException(
+                            $"Archive extraction failed: Both Linux 7zz and Proton 7z.exe failed to extract '{archiveName}'. " +
+                            $"Please manually delete the archive from '{downloadsPath}' and re-run the installation to re-download it. " +
+                            $"If this is Synthesis.zip or a similar archive that uses the same filename across versions, " +
+                            $"deleting it will ensure you get the correct version for this modlist.");
                     }
                 }
 
@@ -637,7 +638,12 @@ public class FileExtractor
             
             if (processResult != 0)
             {
-                throw new Exception($"Proton 7z.exe extraction failed with exit code {processResult}");
+                // The actual error details are already logged by RunProton7zExtraction
+                // Throw exception with clear message that will be caught and handled above
+                throw new InvalidOperationException(
+                    $"Proton 7z.exe extraction failed with exit code {processResult} for archive '{source.FileName}'. " +
+                    $"Check the error logs above for details from 7z.exe. " +
+                    $"This usually indicates the archive is corrupted, incomplete, or incompatible.");
             }
             
             _logger.LogDebug("Proton 7z.exe extraction completed successfully");
