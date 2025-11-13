@@ -141,6 +141,9 @@ public class DownloadDispatcher
         }
         catch (TaskCanceledException)
         {
+            // Match upstream: swallow ALL TaskCanceledException (timeouts and user cancellation)
+            // Return empty hash to trigger DownloadWithPossibleUpgrade retry logic
+            // Partial file is preserved for resume on next attempt
             return new Hash();
         }
     }

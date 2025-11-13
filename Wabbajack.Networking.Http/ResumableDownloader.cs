@@ -50,12 +50,17 @@ public class ResumableDownloader(ILogger<ResumableDownloader> _logger, IHttpClie
         }
         catch (Exception ex) when (ex is SocketException || ex is IOException || ex is HttpRequestException)
         {
-            _logger.LogDebug("Failed to download '{name}' due to network error. Retrying...", filePath.FileName.ToString());
+            // Match upstream: only catch SocketException, IOException, and HttpRequestException
+            // TaskCanceledException bubbles up to DownloadDispatcher which handles it
+            _logger.LogDebug("Failed to download '{name}' due to network error. Retrying... ({retries} retries remaining)", 
+                filePath.FileName.ToString(), retry);
 
             if (retry == 0)
             {
-                _logger.LogError(ex, "Failed to download '{name}'", filePath.FileName.ToString());
-
+                _logger.LogError(ex, "Failed to download '{name}' after all retries. Partial file will be resumed on next attempt.", filePath.FileName.ToString());
+                
+                // Don't delete partial files - allow resume on next attempt
+                // Partial files are excluded from hash checking (only exact size matches are hashed)
                 throw;
             }
 
@@ -69,8 +74,9 @@ public class ResumableDownloader(ILogger<ResumableDownloader> _logger, IHttpClie
 
             if (retry == 0)
             {
-                _logger.LogError(ex, "Failed to download '{name}'", filePath.FileName.ToString());
-
+                _logger.LogError(ex, "Failed to download '{name}'. Partial file will be resumed on next attempt.", filePath.FileName.ToString());
+                
+                // Don't delete partial files - allow resume on next attempt
                 throw;
             }
 
@@ -80,8 +86,9 @@ public class ResumableDownloader(ILogger<ResumableDownloader> _logger, IHttpClie
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to download '{name}'", filePath.FileName.ToString());
-
+            _logger.LogError(ex, "Failed to download '{name}'. Partial file will be resumed on next attempt.", filePath.FileName.ToString());
+            
+            // Don't delete partial files - allow resume on next attempt
             throw;
         }
     }

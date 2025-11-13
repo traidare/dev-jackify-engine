@@ -711,6 +711,14 @@ public abstract class AInstaller<T>
 
             if (hash != archive.Hash)
             {
+                // Empty hash (default) means download didn't complete - don't delete partial file, allow resume
+                if (hash == default)
+                {
+                    _logger.LogDebug("Download incomplete for {name} - partial file will be resumed on next attempt", archive.Name);
+                    return false;
+                }
+                
+                // Non-empty hash mismatch means file is corrupted - delete it
                 if (destination!.Value.FileExists())
                 {
                     _logger.LogError("Hash mismatch for existing file {name}: expected {Expected}, got {Downloaded}. The file appears to be corrupted or outdated.", 
@@ -771,8 +779,10 @@ public abstract class AInstaller<T>
             .ToDictionary(g => g.Key, g => g.Select(v => v.x));
 
         _logger.LogInformation("{Duration} Linking archives to downloads", ConsoleOutput.GetDurationTimestamp());
+        // Only hash files that exactly match expected size - exclude partial downloads
         var toHash = ModList.Archives.Where(a => hashDict.ContainsKey(a.Size))
-            .SelectMany(a => hashDict[a.Size]).ToList();
+            .SelectMany(a => hashDict[a.Size].Where(f => f.Size() == a.Size)) // Only files with exact size match
+            .ToList();
 
         // Log any archives that weren't found in the filesystem
         var missingArchives = ModList.Archives.Where(a => !hashDict.ContainsKey(a.Size)).ToList();

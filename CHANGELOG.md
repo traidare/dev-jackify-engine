@@ -2,6 +2,22 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.3.19 - 2025-11-13
+### Download Reliability Improvements
+* **Resume Support**: Fixed download restart issue - partial files are now preserved on timeout, allowing resume instead of restart
+* **Exception Handling**: Matched upstream Wabbajack behavior - TaskCanceledException (timeouts) now properly handled to allow silent resume
+* **Hash Mismatch Logic**: Empty hash (incomplete downloads) no longer triggers file deletion - only actual hash mismatches delete files
+* **Partial File Exclusion**: Partial downloads are excluded from hash checking (only exact size matches are hashed) to prevent false hash mismatches
+
+### User Experience Improvements
+* **BSA Progress Messages**: Building/Writing/Verifying BSA messages now overwrite the same line instead of creating new lines for cleaner output
+* **Progress Line Clearing**: Progress line is properly cleared after BSA building completes
+
+### Archive Extraction Error Messages
+* **Improved Error Reporting**: Better error messages when both Linux 7zz and Proton 7z.exe fail to extract archives
+* **User Guidance**: Clear instructions to manually delete corrupted archives and re-run installation
+* **Synthesis.zip Note**: Specific guidance for archives like Synthesis.zip that use the same filename across versions
+
 ## Version 0.3.18 - 2025-11-05
 ### Archive Extraction Fix
 * **Proton Fallback**: Exit code 2 (fatal errors) now automatically retries with Proton 7z.exe for ZIP/7Z/RAR archives

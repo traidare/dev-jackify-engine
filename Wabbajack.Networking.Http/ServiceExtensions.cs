@@ -14,7 +14,9 @@ public static class ServiceExtensions
         services.AddHttpClient("ResumableClient")
             .ConfigureHttpClient(c => 
             {
-                c.Timeout = TimeSpan.FromHours(1);
+                // Match upstream Wabbajack timeout (5 minutes)
+                // This applies to periods where no data is received, not total download time
+                c.Timeout = TimeSpan.FromMinutes(5);
                 c.DefaultRequestHeaders.ConnectionClose = false; // Keep connections alive
             })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler()

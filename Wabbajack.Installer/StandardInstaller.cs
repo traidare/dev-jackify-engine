@@ -420,7 +420,7 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         foreach (var bsa in bsas)
         {
             UpdateProgress(1);
-            _logger.LogInformation("{Duration} Building {bsaTo}", ConsoleOutput.GetDurationTimestamp(), bsa.To.FileName);
+            ConsoleOutput.PrintProgressWithDuration($"Building {bsa.To.FileName}");
 
             var sourceDir = _configuration.Install.Combine(Consts.BSACreationDir, bsa.TempID);
 
@@ -443,7 +443,7 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                 return fs;
             }).ToList();
 
-            _logger.LogInformation("{Duration} Writing {bsaTo}", ConsoleOutput.GetDurationTimestamp(), bsa.To);
+            ConsoleOutput.PrintProgressWithDuration($"Writing {bsa.To.FileName}");
             var outPath = _configuration.Install.Combine(bsa.To);
 
             await using (var outStream = outPath.Open(FileMode.Create, FileAccess.Write, FileShare.None))
@@ -455,7 +455,7 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
             await FileHashCache.FileHashWriteCache(outPath, bsa.Hash);
 
-            _logger.LogInformation("{Duration} Verifying {bsaTo}", ConsoleOutput.GetDurationTimestamp(), bsa.To);
+            ConsoleOutput.PrintProgressWithDuration($"Verifying {bsa.To.FileName}");
             var reader = await BSADispatch.Open(outPath);
             var results = await reader.Files.PMapAllBatchedAsync(_limiter, async state =>
             {
@@ -472,6 +472,9 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                 return (srcDirective, hash);
             }).ToHashSet();
         }
+        
+        // Clear the progress line after BSA building is complete
+        ConsoleOutput.ClearProgressLine();
 
         NextStep(Consts.StepFinished, "Removing Temporary Files", 2);
         
