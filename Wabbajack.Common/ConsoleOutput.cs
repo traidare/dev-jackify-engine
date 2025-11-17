@@ -66,4 +66,18 @@ public static class ConsoleOutput
         var elapsed = DateTime.UtcNow - _startTime;
         return $"[{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}]";
     }
+
+    /// <summary>
+    /// Prints individual file progress in the format expected by Jackify GUI parser.
+    /// Format: [FILE_PROGRESS] Operation: filename (percent%) [speed]
+    /// Outputs to stderr to keep it separate from normal stdout.
+    /// </summary>
+    public static void PrintFileProgress(string operation, string filename, double percent, string speed)
+    {
+        // Format percent - use integer if whole number, otherwise one decimal place
+        var percentStr = percent % 1.0 == 0 ? $"{(int)percent}" : $"{percent:F1}";
+        
+        var message = $"[FILE_PROGRESS] {operation}: {filename} ({percentStr}%) [{speed}]";
+        Console.Error.WriteLine(message);
+    }
 }

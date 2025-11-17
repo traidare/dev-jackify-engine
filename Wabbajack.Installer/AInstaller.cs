@@ -155,14 +155,98 @@ public abstract class AInstaller<T>
         await using var stream = _configuration.ModlistArchive.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
         NextStep(Consts.StepPreparing, "Extracting Modlist", archive.Entries.Count);
+        
+        // Track extraction progress for individual file progress output
+        using var fileProgressTracker = new FileProgressTracker();
+        var lastFileProgressOutput = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>();
+        var totalEntries = archive.Entries.Count;
+        var processedEntries = 0;
+        
+        // Display task for extraction progress
+        var displayCts = new CancellationTokenSource();
+        var displayTask = Task.Run(async () =>
+        {
+            while (!displayCts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
+                    
+                    var activeFiles = fileProgressTracker.GetActiveFiles();
+                    var now = DateTime.UtcNow;
+                    
+                    foreach (var (filename, progress) in activeFiles)
+                    {
+                        var shouldOutput = progress.IsCompleted || 
+                            !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) || 
+                            (now - lastOutput).TotalMilliseconds >= 200;
+                        
+                        if (shouldOutput)
+                        {
+                            var percent = progress.GetPercent();
+                            var speed = progress.GetSpeedString();
+                            var operation = progress.IsCompleted ? "Completed" : progress.Operation;
+                            
+                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                            lastFileProgressOutput[filename] = now;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, displayCts.Token);
+        
         foreach (var entry in archive.Entries)
         {
+            var filename = entry.FullName;
+            var entrySize = entry.Length;
+            var startTime = DateTime.UtcNow;
+            long bytesCopied = 0;
+            
+            // Add to tracker at start
+            fileProgressTracker.UpdateProgress(filename, "Extracting", 0, entrySize, startTime);
+            
             var path = entry.FullName.ToRelativePath().RelativeTo(ExtractedModlistFolder);
             path.Parent.CreateDirectory();
             await using var of = path.Open(FileMode.Create, FileAccess.Write, FileShare.None);
-            await entry.Open().CopyToAsync(of, token);
+            
+            // Copy with progress tracking
+            await using var sourceStream = entry.Open();
+            var buffer = new byte[81920]; // 80KB buffer
+            int bytesRead;
+            while ((bytesRead = await sourceStream.ReadAsync(buffer, token)) > 0)
+            {
+                await of.WriteAsync(buffer.AsMemory(0, bytesRead), token);
+                bytesCopied += bytesRead;
+                
+                // Update progress periodically (every 1MB or 5% change)
+                var updateThreshold = Math.Max(1024 * 1024, entrySize / 20);
+                if (bytesCopied % updateThreshold < bytesRead || bytesCopied == entrySize)
+                {
+                    fileProgressTracker.UpdateProgress(filename, "Extracting", bytesCopied, entrySize, DateTime.UtcNow);
+                }
+            }
+            
+            // Mark as completed
+            fileProgressTracker.MarkCompleted(filename);
+            var completedInfo = fileProgressTracker.GetFileInfo(filename);
+            if (completedInfo != null && completedInfo.IsCompleted)
+            {
+                var percent = completedInfo.GetPercent();
+                var speed = completedInfo.GetSpeedString();
+                ConsoleOutput.PrintFileProgress("Completed", filename, percent, speed);
+            }
+            
+            processedEntries++;
             UpdateProgress(1);
         }
+        
+        // Clean up display task
+        displayCts.Cancel();
+        try { await displayTask; } catch (OperationCanceledException) { }
     }
 
     public async Task<byte[]> LoadBytesFromPath(RelativePath path)
@@ -313,6 +397,47 @@ public abstract class AInstaller<T>
         var processedSize = 0L;
         var totalSize = allDirectives.Sum(d => d.Size);
         
+        // Track installation progress for individual file progress output
+        using var fileProgressTracker = new FileProgressTracker();
+        var lastFileProgressOutput = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>();
+        
+        // Display task for installation progress
+        var displayCts = new CancellationTokenSource();
+        var displayTask = Task.Run(async () =>
+        {
+            while (!displayCts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
+                    
+                    var activeFiles = fileProgressTracker.GetActiveFiles();
+                    var now = DateTime.UtcNow;
+                    
+                    foreach (var (filename, progress) in activeFiles)
+                    {
+                        var shouldOutput = progress.IsCompleted || 
+                            !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) || 
+                            (now - lastOutput).TotalMilliseconds >= 200;
+                        
+                        if (shouldOutput)
+                        {
+                            var percent = progress.GetPercent();
+                            var speed = progress.GetSpeedString();
+                            var operation = progress.IsCompleted ? "Completed" : progress.Operation;
+                            
+                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                            lastFileProgressOutput[filename] = now;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, displayCts.Token);
+        
         var grouped = allDirectives
             .Select(a => {
                 try
@@ -340,6 +465,17 @@ public abstract class AInstaller<T>
             {
                 if (token.IsCancellationRequested) return;
                 var file = directive.Directive;
+                
+                // Track individual file installation progress
+                var filename = file.To.FileName.ToString();
+                var fileSize = file.Size;
+                var startTime = DateTime.UtcNow;
+                
+                // Determine operation type - textures show as "Converting", others as "Installing"
+                var operation = file is TransformedTexture ? "Converting" : "Installing";
+                
+                // Add to tracker at start
+                fileProgressTracker.UpdateProgress(filename, operation, 0, fileSize, startTime);
                 
                 // Update progress tracking
                 Interlocked.Increment(ref processedFiles);
@@ -448,11 +584,26 @@ public abstract class AInstaller<T>
                     default:
                         throw new Exception($"No handler for {directive}");
                 }
+                
+                // Mark file installation as completed
+                fileProgressTracker.MarkCompleted(filename);
+                var completedInfo = fileProgressTracker.GetFileInfo(filename);
+                if (completedInfo != null && completedInfo.IsCompleted)
+                {
+                    var percent = completedInfo.GetPercent();
+                    var speed = completedInfo.GetSpeedString();
+                    ConsoleOutput.PrintFileProgress("Completed", filename, percent, speed);
+                }
+                
                 await FileHashCache.FileHashWriteCache(destPath, file.Hash);
 
                 await job.Report((int) directive.VF.Size, token);
             }
         }, token);
+        
+        // Clean up display task
+        displayCts.Cancel();
+        try { await displayTask; } catch (OperationCanceledException) { }
     }
 
     protected void ThrowOnNonMatchingHash(Directive file, Hash gotHash)
@@ -540,12 +691,17 @@ public abstract class AInstaller<T>
         BandwidthMonitor? bandwidthMonitor = null;
         CancellationTokenSource? displayCts = null;
         Task? displayTask = null;
+        FileProgressTracker? fileProgressTracker = null;
         var completedCount = 0;
+        var lastFileProgressOutput = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>();
 
         if (nonManualCount > 0)
         {
             // Professional bandwidth monitoring setup
             bandwidthMonitor = new BandwidthMonitor(sampleWindowSeconds: 5); // 5-second rolling window
+            
+            // File progress tracking for individual file progress output
+            fileProgressTracker = new FileProgressTracker();
 
             // Update display every 1 second for professional feel
             displayCts = new CancellationTokenSource();
@@ -561,6 +717,34 @@ public abstract class AInstaller<T>
                         var currentCompleted = Interlocked.CompareExchange(ref completedCount, 0, 0);
 
                         ConsoleOutput.PrintProgressWithDuration($"Downloading Mod Archives ({currentCompleted}/{nonManualCount}) - {currentBandwidthMBps:F1}MB/s");
+                        
+                        // Output individual file progress for all active files (with throttling)
+                        if (fileProgressTracker != null)
+                        {
+                            var activeFiles = fileProgressTracker.GetActiveFiles();
+                            var now = DateTime.UtcNow;
+                            
+                            foreach (var (filename, progress) in activeFiles)
+                            {
+                                // Always output completed files immediately (so GUI sees completion)
+                                // For active files, throttle: only output if >200ms since last output
+                                var shouldOutput = progress.IsCompleted || 
+                                    !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) || 
+                                    (now - lastOutput).TotalMilliseconds >= 200;
+                                
+                                if (shouldOutput)
+                                {
+                                    var percent = progress.GetPercent();
+                                    var speed = progress.GetSpeedString();
+                                    
+                                    // Show "Completed" status for finished files
+                                    var operation = progress.IsCompleted ? "Completed" : progress.Operation;
+                                    
+                                    ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                                    lastFileProgressOutput[filename] = now;
+                                }
+                            }
+                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -584,8 +768,8 @@ public abstract class AInstaller<T>
                 
                 try
                 {
-                    // Download using standard method - bandwidth monitor measures network interface directly
-                    var hash = await _downloadDispatcher.Download(archive, outputPath, token);
+                    // Download using standard method with file progress tracking
+                    var hash = await _downloadDispatcher.Download(archive, outputPath, token, null, fileProgressTracker);
                     
                     // Update completed count
                     Interlocked.Increment(ref completedCount);
@@ -593,6 +777,9 @@ public abstract class AInstaller<T>
                 }
                 catch (Exception ex)
                 {
+                    // Mark as failed in tracker
+                    fileProgressTracker?.MarkCompleted(archive.Name);
+                    
                     // Provide concise user-facing context and a URL in non-debug, with full details in debug
                     var modInfo = GetModInfoFromArchive(archive);
                     var sourceUrl = GetSourceUrlFromArchive(archive);
@@ -627,6 +814,7 @@ public abstract class AInstaller<T>
         }
 
         bandwidthMonitor?.Dispose();
+        fileProgressTracker?.Dispose();
     }
 
     private string GetModInfoFromArchive(Archive archive)
@@ -804,14 +992,79 @@ public abstract class AInstaller<T>
         _logger.LogInformation("{Duration} Found {count} total files, {hashedCount} matching filesize", ConsoleOutput.GetDurationTimestamp(), allFiles.Count,
             toHash.Count);
 
+        // Track validation progress for individual file progress output
+        using var fileProgressTracker = new FileProgressTracker();
+        var lastFileProgressOutput = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>();
+        
+        // Display task for validation progress
+        var displayCts = new CancellationTokenSource();
+        var displayTask = Task.Run(async () =>
+        {
+            while (!displayCts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
+                    
+                    var activeFiles = fileProgressTracker.GetActiveFiles();
+                    var now = DateTime.UtcNow;
+                    
+                    foreach (var (filename, progress) in activeFiles)
+                    {
+                        var shouldOutput = progress.IsCompleted || 
+                            !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) || 
+                            (now - lastOutput).TotalMilliseconds >= 200;
+                        
+                        if (shouldOutput)
+                        {
+                            var percent = progress.GetPercent();
+                            var speed = progress.GetSpeedString();
+                            var operation = progress.IsCompleted ? "Completed" : progress.Operation;
+                            
+                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                            lastFileProgressOutput[filename] = now;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, displayCts.Token);
+
         var hashResults = await
             toHash
                 .PMapAll(async e =>
                 {
+                    var filename = e.FileName.ToString();
+                    var fileSize = e.Size();
+                    var startTime = DateTime.UtcNow;
+                    
+                    // Add to tracker at start (validation doesn't have byte-level progress, so we'll track by time)
+                    fileProgressTracker.UpdateProgress(filename, "Validating", 0, fileSize, startTime);
+                    
+                    // Hash the file
+                    var hash = await FileHashCache.FileHashCachedAsync(e, token);
+                    
+                    // Mark as completed
+                    fileProgressTracker.MarkCompleted(filename);
+                    var completedInfo = fileProgressTracker.GetFileInfo(filename);
+                    if (completedInfo != null && completedInfo.IsCompleted)
+                    {
+                        var percent = completedInfo.GetPercent();
+                        var speed = completedInfo.GetSpeedString();
+                        ConsoleOutput.PrintFileProgress("Completed", filename, percent, speed);
+                    }
+                    
                     UpdateProgress(1);
-                    return (await FileHashCache.FileHashCachedAsync(e, token), e);
+                    return (hash, e);
                 })
                 .ToList();
+        
+        // Clean up display task
+        displayCts.Cancel();
+        try { await displayTask; } catch (OperationCanceledException) { }
 
         HashedArchives = hashResults
             .OrderByDescending(e => e.Item2.LastModified())

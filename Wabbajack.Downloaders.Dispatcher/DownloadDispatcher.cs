@@ -46,6 +46,11 @@ public class DownloadDispatcher
 
     public async Task<Hash> Download(Archive a, AbsolutePath dest, CancellationToken token, bool? proxy = null)
     {
+        return await Download(a, dest, token, proxy, null);
+    }
+
+    public async Task<Hash> Download(Archive a, AbsolutePath dest, CancellationToken token, bool? proxy, FileProgressTracker? progressTracker)
+    {
         if (token.IsCancellationRequested)
         {
             return new Hash();
@@ -53,8 +58,39 @@ public class DownloadDispatcher
 
         using var downloadScope = _logger.BeginScope("Downloading {Name}", a.Name);
         using var job = await _limiter.Begin("Downloading " + a.Name, a.Size, token);
+        
+        // Hook into job progress updates if tracker is provided
+        if (progressTracker != null)
+        {
+            // Add file to tracker immediately when download starts (even if no progress yet)
+            progressTracker.UpdateProgress(a.Name, "Downloading", 0, a.Size, DateTime.UtcNow);
+            
+            job.OnUpdate += (_, progressInfo) =>
+            {
+                var (percent, processed) = progressInfo;
+                var currentBytes = processed;
+                var totalBytes = a.Size;
+                progressTracker.UpdateProgress(a.Name, "Downloading", currentBytes, totalBytes, DateTime.UtcNow);
+            };
+        }
+        
         var hash = await Download(a, dest, job, token, proxy);
         _logger.LogDebug("Finished downloading {name}. Hash: {hash}; Size: {size}/{expectedSize}", a.Name, hash, dest.Size().ToFileSizeString(), a.Size.ToFileSizeString());
+        
+        // Mark as completed in tracker and output immediately so GUI sees completion
+        if (progressTracker != null)
+        {
+            progressTracker.MarkCompleted(a.Name);
+            // Output completion immediately (bypasses display cycle delay)
+            var completedInfo = progressTracker.GetFileInfo(a.Name);
+            if (completedInfo != null && completedInfo.IsCompleted)
+            {
+                var percent = completedInfo.GetPercent();
+                var speed = completedInfo.GetSpeedString();
+                ConsoleOutput.PrintFileProgress("Completed", a.Name, percent, speed);
+            }
+        }
+        
         return hash;
     }
 
