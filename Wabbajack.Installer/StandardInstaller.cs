@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -417,12 +418,56 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         _logger.LogInformation("{Duration} Building {bsasCount} bsa files", ConsoleOutput.GetDurationTimestamp(), bsas.Count);
         NextStep("Installing", "Building BSAs", bsas.Count);
 
+        using var fileProgressTracker = new FileProgressTracker();
+        var lastFileProgressOutput = new ConcurrentDictionary<string, DateTime>();
+        var displayCts = new CancellationTokenSource();
+        var displayTask = Task.Run(async () =>
+        {
+            while (!displayCts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(1000, displayCts.Token);
+
+                    var activeFiles = fileProgressTracker.GetActiveFiles();
+                    var now = DateTime.UtcNow;
+
+                    foreach (var (filename, progress) in activeFiles)
+                    {
+                        var shouldOutput = progress.IsCompleted ||
+                                           !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) ||
+                                           (now - lastOutput).TotalMilliseconds >= 200;
+
+                        if (shouldOutput)
+                        {
+                            var percent = progress.GetPercent();
+                            var speed = progress.GetSpeedString();
+                            var operation = progress.IsCompleted ? "Completed" : progress.Operation;
+
+                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                            lastFileProgressOutput[filename] = now;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, displayCts.Token);
+
         foreach (var bsa in bsas)
         {
             UpdateProgress(1);
             ConsoleOutput.PrintProgressWithDuration($"Building {bsa.To.FileName}");
 
             var sourceDir = _configuration.Install.Combine(Consts.BSACreationDir, bsa.TempID);
+
+            var fileCount = Math.Max(1, bsa.FileStates.Count);
+            var totalSteps = Math.Max(1, fileCount * 2);
+            long processedSteps = 0;
+            var bsaName = bsa.To.FileName.ToString();
+            fileProgressTracker.UpdateProgress(bsaName, "Building", 0, totalSteps, DateTime.UtcNow);
 
             await using var a = BSADispatch.CreateBuilder(bsa.State, _manager);
 
@@ -440,6 +485,8 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
                 var fs = filePath.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
                 await a.AddFile(state, fs, token);
+                var current = Interlocked.Increment(ref processedSteps);
+                fileProgressTracker.UpdateProgress(bsaName, "Building", current, totalSteps, DateTime.UtcNow);
                 return fs;
             }).ToList();
 
@@ -469,8 +516,21 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                 if (astate is not BA2DX10File && srcDirective.IsDeterministic)
                     ThrowOnNonMatchingHash(bsa, srcDirective, astate, hash);
 
+                var current = Interlocked.Increment(ref processedSteps);
+                fileProgressTracker.UpdateProgress(bsaName, "Building", current, totalSteps, DateTime.UtcNow);
+
                 return (srcDirective, hash);
             }).ToHashSet();
+
+            fileProgressTracker.UpdateProgress(bsaName, "Building", totalSteps, totalSteps, DateTime.UtcNow);
+            fileProgressTracker.MarkCompleted(bsaName);
+            var completedInfo = fileProgressTracker.GetFileInfo(bsaName);
+            if (completedInfo != null && completedInfo.IsCompleted)
+            {
+                var percent = completedInfo.GetPercent();
+                var speed = completedInfo.GetSpeedString();
+                ConsoleOutput.PrintFileProgress("Completed", bsaName, percent, speed);
+            }
         }
         
         // Clear the progress line after BSA building is complete
@@ -494,6 +554,10 @@ public class StandardInstaller : AInstaller<StandardInstaller>
             tempDir.DeleteDirectory();
             UpdateProgress(1);
         }
+
+        displayCts.Cancel();
+        try { await displayTask; }
+        catch (OperationCanceledException) { }
 
         // Clean up any stale Proton prefixes
         try
