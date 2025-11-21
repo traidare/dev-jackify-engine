@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.CommandLine.NamingConventionBinder;
@@ -171,25 +172,56 @@ public class Install
             State = state!
         };
 
-        // Set up progress reporting with single-line updates
-        var startTime = DateTime.UtcNow;
-        var metrics = _serviceProvider.GetService(typeof(ITransferMetrics)) as ITransferMetrics;
-        Action<long, long> progressCallback = (processed, total) =>
+        using var fileProgressTracker = new FileProgressTracker();
+        var lastFileProgressOutput = new ConcurrentDictionary<string, DateTime>();
+        var displayCts = new CancellationTokenSource();
+        var displayTask = Task.Run(async () =>
         {
-            var elapsed = DateTime.UtcNow - startTime;
-            var speedMBps = elapsed.TotalSeconds > 0 ? (processed / 1024.0 / 1024.0) / elapsed.TotalSeconds : 0;
-            var totalMBps = metrics != null ? metrics.BytesPerSecondSmoothed / (1024.0 * 1024.0) : 0.0;
-            var totalMB = total / 1024.0 / 1024.0;
-            var processedMB = processed / 1024.0 / 1024.0;
-            
-            // Use single-line progress update instead of multi-line logging
-            ConsoleOutput.PrintProgressWithDuration($"Downloading {archive.Name} ({processedMB:F1}/{totalMB:F1}MB) - {speedMBps:F1}MB/s Total: {totalMBps:F1}MB/s");
-        };
+            while (!displayCts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(1000, displayCts.Token);
+                    var activeFiles = fileProgressTracker.GetActiveFiles();
+                    var now = DateTime.UtcNow;
+                    foreach (var (filename, progress) in activeFiles)
+                    {
+                        var shouldOutput = progress.IsCompleted ||
+                                           !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) ||
+                                           (now - lastOutput).TotalMilliseconds >= 200;
+                        if (shouldOutput)
+                        {
+                            var percent = progress.GetPercent();
+                            var speed = progress.GetSpeedString();
+                            var operation = progress.IsCompleted ? "Completed" : progress.Operation;
+                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                            lastFileProgressOutput[filename] = now;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, displayCts.Token);
 
-        await _dispatcher.Download(archive, wabbajack, token, progressCallback);
-        
-        // Clear the progress line after download completes
-        ConsoleOutput.ClearProgressLine();
+        try
+        {
+            await _dispatcher.Download(archive, wabbajack, token, null, fileProgressTracker);
+        }
+        finally
+        {
+            displayCts.Cancel();
+            try
+            {
+                await displayTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Swallow cancellation to avoid noisy logs during shutdown
+            }
+        }
 
         return true;
     }

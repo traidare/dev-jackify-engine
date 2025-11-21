@@ -175,6 +175,9 @@ public abstract class AInstaller<T>
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
                     
+                    // Read current processed count (may be slightly stale, but fine for progress display)
+                    var currentProcessed = processedEntries;
+                    
                     foreach (var (filename, progress) in activeFiles)
                     {
                         var shouldOutput = progress.IsCompleted || 
@@ -187,7 +190,11 @@ public abstract class AInstaller<T>
                             var speed = progress.GetSpeedString();
                             var operation = progress.IsCompleted ? "Completed" : progress.Operation;
                             
-                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                            // Include counter for extraction operations (show completed/total)
+                            var counterCompleted = progress.Operation == "Extracting" ? currentProcessed : (int?)null;
+                            var counterTotal = progress.Operation == "Extracting" ? totalEntries : (int?)null;
+                            
+                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed, counterCompleted, counterTotal);
                             lastFileProgressOutput[filename] = now;
                         }
                     }
@@ -237,7 +244,8 @@ public abstract class AInstaller<T>
             {
                 var percent = completedInfo.GetPercent();
                 var speed = completedInfo.GetSpeedString();
-                ConsoleOutput.PrintFileProgress("Completed", filename, percent, speed);
+                // Include counter showing completed/total entries
+                ConsoleOutput.PrintFileProgress("Completed", filename, percent, speed, processedEntries + 1, totalEntries);
             }
             
             processedEntries++;
@@ -392,8 +400,8 @@ public abstract class AInstaller<T>
             ConsoleOutput.GetDurationTimestamp(), totalFiles, totalTextures);
         
         // Progress tracking variables
-        var processedFiles = 0;
-        var processedTextures = 0;
+        long processedFiles = 0;
+        long processedTextures = 0;
         var processedSize = 0L;
         var totalSize = allDirectives.Sum(d => d.Size);
         
@@ -414,6 +422,34 @@ public abstract class AInstaller<T>
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
                     
+                    // Read current processed counts (may be slightly stale, but fine for progress display)
+                    var currentProcessedFiles = (int)Interlocked.Read(ref processedFiles);
+                    var currentProcessedTextures = (int)Interlocked.Read(ref processedTextures);
+                    
+                    // Print overall progress counter (single line that updates in place with \r)
+                    var currentProcessedSize = Interlocked.Read(ref processedSize);
+                    var processedSizeMB = currentProcessedSize / 1024.0 / 1024.0;
+                    var totalSizeMB = totalSize / 1024.0 / 1024.0;
+                    string processedSizeStr, totalSizeStr;
+                    if (processedSizeMB >= 1024.0)
+                    {
+                        processedSizeStr = $"{processedSizeMB / 1024.0:F1}GB";
+                    }
+                    else
+                    {
+                        processedSizeStr = $"{processedSizeMB:F1}MB";
+                    }
+                    if (totalSizeMB >= 1024.0)
+                    {
+                        totalSizeStr = $"{totalSizeMB / 1024.0:F1}GB";
+                    }
+                    else
+                    {
+                        totalSizeStr = $"{totalSizeMB:F1}MB";
+                    }
+                    var overallProgressMessage = $"Installing files {currentProcessedFiles}/{totalFiles} ({processedSizeStr}/{totalSizeStr}) - Converting textures: {currentProcessedTextures}/{totalTextures}";
+                    ConsoleOutput.PrintProgressWithDuration(overallProgressMessage);
+                    
                     foreach (var (filename, progress) in activeFiles)
                     {
                         var shouldOutput = progress.IsCompleted || 
@@ -426,7 +462,21 @@ public abstract class AInstaller<T>
                             var speed = progress.GetSpeedString();
                             var operation = progress.IsCompleted ? "Completed" : progress.Operation;
                             
-                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                            // Include counter: use texture counts for "Converting", file counts for "Installing"
+                            int? counterCompleted = null;
+                            int? counterTotal = null;
+                            if (progress.Operation == "Converting")
+                            {
+                                counterCompleted = currentProcessedTextures;
+                                counterTotal = totalTextures;
+                            }
+                            else if (progress.Operation == "Installing")
+                            {
+                                counterCompleted = currentProcessedFiles;
+                                counterTotal = totalFiles;
+                            }
+                            
+                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed, counterCompleted, counterTotal);
                             lastFileProgressOutput[filename] = now;
                         }
                     }
@@ -481,32 +531,8 @@ public abstract class AInstaller<T>
                 Interlocked.Increment(ref processedFiles);
                 Interlocked.Add(ref processedSize, file.Size);
                 
-                // Update single-line progress for file processing with file sizes
-                var processedSizeMB = processedSize / 1024.0 / 1024.0;
-                var totalSizeMB = totalSize / 1024.0 / 1024.0;
-                
-                // Use GB for sizes >= 1GB, MB otherwise
-                string processedSizeStr, totalSizeStr;
-                if (processedSizeMB >= 1024.0)
-                {
-                    processedSizeStr = $"{processedSizeMB / 1024.0:F1}GB";
-                }
-                else
-                {
-                    processedSizeStr = $"{processedSizeMB:F1}MB";
-                }
-                
-                if (totalSizeMB >= 1024.0)
-                {
-                    totalSizeStr = $"{totalSizeMB / 1024.0:F1}GB";
-                }
-                else
-                {
-                    totalSizeStr = $"{totalSizeMB:F1}MB";
-                }
-                
-                var fileProgressMessage = $"Installing files {processedFiles}/{totalFiles} ({processedSizeStr}/{totalSizeStr}) - Converting textures: {processedTextures}/{totalTextures}";
-                ConsoleOutput.PrintProgressWithDuration(fileProgressMessage);
+                // Overall progress counter is now printed by the display task (every 1 second)
+                // No need to print it here for every file - that causes console spam
                 
                 var destPath = file.To.RelativeTo(_configuration.Install);
                 switch (file)
@@ -533,32 +559,8 @@ public abstract class AInstaller<T>
                         // Update texture progress before conversion
                         Interlocked.Increment(ref processedTextures);
                         
-                        // Update single-line progress (overwrites the same line) with file sizes
-                        var textureProcessedSizeMB = processedSize / 1024.0 / 1024.0;
-                        var textureTotalSizeMB = totalSize / 1024.0 / 1024.0;
-                        
-                        // Use GB for sizes >= 1GB, MB otherwise
-                        string textureProcessedSizeStr, textureTotalSizeStr;
-                        if (textureProcessedSizeMB >= 1024.0)
-                        {
-                            textureProcessedSizeStr = $"{textureProcessedSizeMB / 1024.0:F1}GB";
-                        }
-                        else
-                        {
-                            textureProcessedSizeStr = $"{textureProcessedSizeMB:F1}MB";
-                        }
-                        
-                        if (textureTotalSizeMB >= 1024.0)
-                        {
-                            textureTotalSizeStr = $"{textureTotalSizeMB / 1024.0:F1}GB";
-                        }
-                        else
-                        {
-                            textureTotalSizeStr = $"{textureTotalSizeMB:F1}MB";
-                        }
-                        
-                        var textureProgressMessage = $"Installing files {processedFiles}/{totalFiles} ({textureProcessedSizeStr}/{textureTotalSizeStr}) - Converting textures: {processedTextures}/{totalTextures}";
-                        ConsoleOutput.PrintProgressWithDuration(textureProgressMessage);
+                        // Overall progress counter is now printed by the display task (every 1 second)
+                        // No need to print it here for every texture - that causes console spam
                         
                         // Only log individual texture recompression in debug mode
                         _logger.LogDebug("Recompressing {Filename}", tt.To.FileName);
@@ -592,7 +594,20 @@ public abstract class AInstaller<T>
                 {
                     var percent = completedInfo.GetPercent();
                     var speed = completedInfo.GetSpeedString();
-                    ConsoleOutput.PrintFileProgress("Completed", filename, percent, speed);
+                    // Include counter: use texture counts for texture conversions, file counts for regular installations
+                    int? counterCompleted = null;
+                    int? counterTotal = null;
+                    if (file is TransformedTexture)
+                    {
+                        counterCompleted = (int)Interlocked.Read(ref processedTextures);
+                        counterTotal = totalTextures;
+                    }
+                    else
+                    {
+                        counterCompleted = (int)Interlocked.Read(ref processedFiles);
+                        counterTotal = totalFiles;
+                    }
+                    ConsoleOutput.PrintFileProgress("Completed", filename, percent, speed, counterCompleted, counterTotal);
                 }
                 
                 await FileHashCache.FileHashWriteCache(destPath, file.Hash);

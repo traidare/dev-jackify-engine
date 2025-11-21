@@ -420,6 +420,8 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
         using var fileProgressTracker = new FileProgressTracker();
         var lastFileProgressOutput = new ConcurrentDictionary<string, DateTime>();
+        var totalBSAs = bsas.Count;
+        long currentBSAIndex = 0;
         var displayCts = new CancellationTokenSource();
         var displayTask = Task.Run(async () =>
         {
@@ -431,6 +433,9 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
+                    
+                    // Read current BSA index (may be slightly stale, but fine for progress display)
+                    var currentBSA = (int)Interlocked.Read(ref currentBSAIndex);
 
                     foreach (var (filename, progress) in activeFiles)
                     {
@@ -443,8 +448,12 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                             var percent = progress.GetPercent();
                             var speed = progress.GetSpeedString();
                             var operation = progress.IsCompleted ? "Completed" : progress.Operation;
+                            
+                            // Include counter for BSA building operations (show current BSA / total BSAs)
+                            var counterCompleted = progress.Operation == "Building" ? currentBSA : (int?)null;
+                            var counterTotal = progress.Operation == "Building" ? totalBSAs : (int?)null;
 
-                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
+                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed, counterCompleted, counterTotal);
                             lastFileProgressOutput[filename] = now;
                         }
                     }
@@ -458,12 +467,13 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
         foreach (var bsa in bsas)
         {
+            Interlocked.Increment(ref currentBSAIndex);
             UpdateProgress(1);
             ConsoleOutput.PrintProgressWithDuration($"Building {bsa.To.FileName}");
 
             var sourceDir = _configuration.Install.Combine(Consts.BSACreationDir, bsa.TempID);
 
-            var fileCount = Math.Max(1, bsa.FileStates.Count);
+            var fileCount = Math.Max(1, bsa.FileStates.Count());
             var totalSteps = Math.Max(1, fileCount * 2);
             long processedSteps = 0;
             var bsaName = bsa.To.FileName.ToString();
@@ -529,7 +539,9 @@ public class StandardInstaller : AInstaller<StandardInstaller>
             {
                 var percent = completedInfo.GetPercent();
                 var speed = completedInfo.GetSpeedString();
-                ConsoleOutput.PrintFileProgress("Completed", bsaName, percent, speed);
+                // Include counter showing completed/total BSAs
+                var currentBSA = (int)Interlocked.Read(ref currentBSAIndex);
+                ConsoleOutput.PrintFileProgress("Completed", bsaName, percent, speed, currentBSA, totalBSAs);
             }
         }
         

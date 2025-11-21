@@ -62,15 +62,31 @@ public class DownloadDispatcher
         // Hook into job progress updates if tracker is provided
         if (progressTracker != null)
         {
-            // Add file to tracker immediately when download starts (even if no progress yet)
-            progressTracker.UpdateProgress(a.Name, "Downloading", 0, a.Size, DateTime.UtcNow);
+            // Check if file exists (resume scenario) to initialize tracker correctly
+            long existingBytes = 0;
+            string operation = "Downloading";
+            if (dest.FileExists())
+            {
+                existingBytes = dest.Size();
+                operation = "Checking existing";
+            }
+            
+            // Initialize tracker with existing file size (0 for new downloads, existing size for resumes)
+            // This prevents unrealistic speed spikes when resuming partial downloads
+            progressTracker.UpdateProgress(a.Name, operation, existingBytes, a.Size, DateTime.UtcNow);
+            
+            // Capture existingBytes for use in callback
+            var initialBytes = existingBytes;
+            var initialOperation = operation;
             
             job.OnUpdate += (_, progressInfo) =>
             {
                 var (percent, processed) = progressInfo;
                 var currentBytes = processed;
                 var totalBytes = a.Size;
-                progressTracker.UpdateProgress(a.Name, "Downloading", currentBytes, totalBytes, DateTime.UtcNow);
+                // Switch to "Downloading" once we start downloading new bytes (after initial resume check)
+                var currentOperation = (initialBytes > 0 && currentBytes > initialBytes) ? "Downloading" : initialOperation;
+                progressTracker.UpdateProgress(a.Name, currentOperation, currentBytes, totalBytes, DateTime.UtcNow);
             };
         }
         
