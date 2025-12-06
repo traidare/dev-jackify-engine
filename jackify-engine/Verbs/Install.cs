@@ -76,7 +76,24 @@ public class Install
         _logger.LogInformation("jackify-engine v{Version}: Minimal Linux-native modlist installer for Jackify", version);
         _logger.LogInformation("---------------------------------------------------------------");
 
-        var modlist = await StandardInstaller.LoadFromFile(_dtos, wabbajack);
+        // Load modlist with error handling for incomplete files
+        ModList modlist;
+        try
+        {
+            modlist = await StandardInstaller.LoadFromFile(_dtos, wabbajack);
+        }
+        catch (System.IO.InvalidDataException ex) when (ex.Message.Contains("End of Central Directory") || ex.Message.Contains("could not be found"))
+        {
+            _logger.LogError("The .wabbajack file is incomplete or corrupted. This usually means the download was interrupted.");
+            _logger.LogError("Please delete the file and try again: {Path}", wabbajack);
+            _logger.LogError("Error: {Error}", ex.Message);
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load .wabbajack file: {Path}", wabbajack);
+            return 1;
+        }
 
         var installer = StandardInstaller.Create(_serviceProvider, new InstallerConfiguration
         {
@@ -157,10 +174,28 @@ public class Install
             wabbajack = downloadDir.Combine(fileName);
         }
         
-        if (wabbajack.FileExists() && await wabbajack.Hash(token) == list.DownloadMetadata!.Hash)
+        // Optimize validation: check file size first before expensive hash check
+        // If size doesn't match, skip hash check and proceed to download/resume
+        if (wabbajack.FileExists())
         {
-            _logger.LogInformation("File already exists, using cached file");
-            return true;
+            var existingSize = wabbajack.Size();
+            if (existingSize == list.DownloadMetadata!.Size)
+            {
+                // Size matches - verify hash to ensure file is correct
+                if (await wabbajack.Hash(token) == list.DownloadMetadata.Hash)
+                {
+                    _logger.LogInformation("File already exists, using cached file");
+                    return true;
+                }
+                // Hash mismatch - file is corrupted, will be redownloaded
+                _logger.LogInformation("Existing file hash mismatch, will redownload");
+            }
+            else
+            {
+                // Size mismatch - partial download, will resume
+                _logger.LogInformation("Existing file size mismatch ({ExistingSize} vs {ExpectedSize}), will resume download", 
+                    existingSize.ToFileSizeString(), list.DownloadMetadata.Size.ToFileSizeString());
+            }
         }
 
         var state = _dispatcher.Parse(new Uri(list.Links.Download));
@@ -172,8 +207,20 @@ public class Install
             State = state!
         };
 
-        using var fileProgressTracker = new FileProgressTracker();
-        var lastFileProgressOutput = new ConcurrentDictionary<string, DateTime>();
+        // Use progress callback with rolling average smoothing (standard approach)
+        // Most download managers use callbacks but smooth them over a time window
+        var totalMB = archive.Size / 1024.0 / 1024.0;
+        var samples = new System.Collections.Generic.Queue<(DateTime time, long bytes)>();
+        const double sampleWindowSeconds = 3.0; // 3-second rolling window for smoothing
+        
+        // Initialize with existing file size if resuming
+        long initialBytes = wabbajack.FileExists() ? wabbajack.Size() : 0;
+        if (initialBytes > 0)
+        {
+            samples.Enqueue((DateTime.UtcNow, initialBytes));
+        }
+        
+        // Update display periodically from samples
         var displayCts = new CancellationTokenSource();
         var displayTask = Task.Run(async () =>
         {
@@ -181,23 +228,42 @@ public class Install
             {
                 try
                 {
-                    await Task.Delay(1000, displayCts.Token);
-                    var activeFiles = fileProgressTracker.GetActiveFiles();
+                    await Task.Delay(500, displayCts.Token); // Update display every 500ms
+                    
                     var now = DateTime.UtcNow;
-                    foreach (var (filename, progress) in activeFiles)
+                    
+                    // Remove samples older than our window
+                    var cutoffTime = now.AddSeconds(-sampleWindowSeconds);
+                    while (samples.Count > 0 && samples.Peek().time < cutoffTime)
                     {
-                        var shouldOutput = progress.IsCompleted ||
-                                           !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) ||
-                                           (now - lastOutput).TotalMilliseconds >= 200;
-                        if (shouldOutput)
-                        {
-                            var percent = progress.GetPercent();
-                            var speed = progress.GetSpeedString();
-                            var operation = progress.IsCompleted ? "Completed" : progress.Operation;
-                            ConsoleOutput.PrintFileProgress(operation, filename, percent, speed);
-                            lastFileProgressOutput[filename] = now;
-                        }
+                        samples.Dequeue();
                     }
+                    
+                    // Calculate speed from samples in window (oldest to newest)
+                    double speedMBps = 0;
+                    long currentBytes = initialBytes;
+                    if (samples.Count >= 2)
+                    {
+                        var oldest = samples.Peek();
+                        // Get newest by converting to array (Queue doesn't have Last())
+                        var sampleArray = samples.ToArray();
+                        var newest = sampleArray[sampleArray.Length - 1];
+                        var timeSpan = (newest.time - oldest.time).TotalSeconds;
+                        var bytesDelta = newest.bytes - oldest.bytes;
+                        
+                        if (timeSpan > 0.5 && bytesDelta > 0) // Need at least 0.5 seconds of data
+                        {
+                            speedMBps = (bytesDelta / 1024.0 / 1024.0) / timeSpan;
+                        }
+                        currentBytes = newest.bytes;
+                    }
+                    else if (samples.Count == 1)
+                    {
+                        currentBytes = samples.Peek().bytes;
+                    }
+                    
+                    var processedMB = currentBytes / 1024.0 / 1024.0;
+                    ConsoleOutput.PrintProgressWithDuration($"Downloading .wabbajack ({processedMB:F1}/{totalMB:F1}MB) - {speedMBps:F1}MB/s");
                 }
                 catch (OperationCanceledException)
                 {
@@ -205,10 +271,66 @@ public class Install
                 }
             }
         }, displayCts.Token);
-
+        
         try
         {
-            await _dispatcher.Download(archive, wabbajack, token, null, fileProgressTracker);
+            // Use progress callback to collect samples (accurate, immediate)
+            var downloadedHash = await _dispatcher.Download(archive, wabbajack, token, (processed, total) =>
+            {
+                // Add sample from callback (this is the accurate bytes downloaded)
+                samples.Enqueue((DateTime.UtcNow, processed));
+            }, null);
+            
+            // Verify download completed successfully
+            if (downloadedHash == default || downloadedHash != archive.Hash)
+            {
+                _logger.LogError("Download failed or hash mismatch. Expected: {ExpectedHash}, Got: {DownloadedHash}", 
+                    archive.Hash, downloadedHash);
+                return false;
+            }
+            
+            // Verify file size matches expected (double-check)
+            if (!wabbajack.FileExists() || wabbajack.Size() != archive.Size)
+            {
+                _logger.LogError("Downloaded file size mismatch. Expected: {ExpectedSize}, Got: {ActualSize}", 
+                    archive.Size.ToFileSizeString(), 
+                    wabbajack.FileExists() ? wabbajack.Size().ToFileSizeString() : "0 bytes");
+                return false;
+            }
+            
+            // Verify file is a valid ZIP (quick integrity check)
+            try
+            {
+                using var zipStream = wabbajack.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var zip = new System.IO.Compression.ZipArchive(zipStream, System.IO.Compression.ZipArchiveMode.Read);
+                // If we can open it and read entries, it's valid
+                var entryCount = zip.Entries.Count;
+            }
+            catch (System.IO.InvalidDataException ex)
+            {
+                _logger.LogError("Downloaded file is corrupted or incomplete (invalid ZIP). Deleting incomplete file. Error: {Error}", ex.Message);
+                try
+                {
+                    wabbajack.Delete();
+                }
+                catch { }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to validate downloaded file as ZIP");
+                return false;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Download cancelled by user");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Download failed with exception");
+            return false;
         }
         finally
         {
@@ -219,8 +341,11 @@ public class Install
             }
             catch (OperationCanceledException)
             {
-                // Swallow cancellation to avoid noisy logs during shutdown
+                // Swallow cancellation
             }
+            
+            // Clear progress line after completion
+            ConsoleOutput.ClearProgressLine();
         }
 
         return true;

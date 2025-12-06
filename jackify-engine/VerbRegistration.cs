@@ -67,5 +67,7 @@ public class VerbRegistration
         // New, read-only archive lister
         CommandLineBuilder.RegisterCommand<ListArchives>(ListArchives.Definition, c => ((ListArchives)c).Run);
         services.AddSingleton<ListArchives>();
+        CommandLineBuilder.RegisterCommand<DownloadModlistImages>(DownloadModlistImages.Definition, c => ((DownloadModlistImages)c).Run);
+        services.AddSingleton<DownloadModlistImages>();
     }
 }

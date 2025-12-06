@@ -26,6 +26,10 @@ public static class CircuitBreaker
         }
         catch (TE ex)
         {
+            // Don't retry on cancellation - immediately rethrow
+            if (ex is OperationCanceledException || ex is TaskCanceledException)
+                throw;
+            
             retries += 1;
             if (retries > maxRetries)
                 throw;
@@ -52,6 +56,10 @@ public static class CircuitBreaker
         }
         catch (TE ex)
         {
+            // Don't retry on cancellation - immediately rethrow
+            if (ex is OperationCanceledException || ex is TaskCanceledException)
+                throw;
+            
             retries += 1;
             if (retries > maxRetries)
                 throw;
@@ -79,6 +87,10 @@ public static class CircuitBreaker
         }
         catch (Exception ex)
         {
+            // Don't retry on cancellation - immediately rethrow
+            if (ex is OperationCanceledException || ex is TaskCanceledException)
+                throw;
+            
             retries += 1;
             if (retries > maxRetries)
                 throw;
@@ -105,6 +117,10 @@ public static class CircuitBreaker
         }
         catch (Exception ex)
         {
+            // Don't retry on cancellation - immediately rethrow
+            if (ex is OperationCanceledException || ex is TaskCanceledException)
+                throw;
+            
             retries += 1;
             if (retries > maxRetries)
                 throw;
@@ -131,6 +147,10 @@ public static class CircuitBreaker
         }
         catch (TE ex)
         {
+            // Don't retry on cancellation - immediately rethrow
+            if (ex is OperationCanceledException || ex is TaskCanceledException)
+                throw;
+            
             retries += 1;
             if (retries > maxRetries)
                 throw;

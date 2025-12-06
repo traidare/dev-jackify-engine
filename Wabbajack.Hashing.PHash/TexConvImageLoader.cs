@@ -148,23 +148,38 @@ public class TexConvImageLoader : IImageLoader, IDisposable
         // Convert Linux paths to Wine format for Proton
         var wineFromPath = ProtonDetector.ConvertToWinePath(from);
         var wineToFolderPath = ProtonDetector.ConvertToWinePath(toFolder);
-        
+
         object[] args;
         if (mipMaps != 0)
         {
-            args = new object[]
+            var argList = new List<object>
             {
-                wineFromPath, "-ft", fileFormat.ToString()[1..], "-f", format, "-o", wineToFolderPath, "-w", w, "-h", h, "-m", mipMaps,
-                "-if", "CUBIC", "-singleproc"
+                wineFromPath, "-ft", fileFormat.ToString()[1..], "-f", format, "-o", wineToFolderPath,
+                "-w", w, "-h", h, "-m", mipMaps, "-if", "CUBIC", "-singleproc"
             };
+
+            // When GPU is explicitly disabled, add -nogpu to force CPU-only texconv behavior.
+            if (TexconvConfig.DisableGpuTexconv)
+            {
+                argList.Add("-nogpu");
+            }
+
+            args = argList.ToArray();
         }
         else
         {
-            args = new object[]
+            var argList = new List<object>
             {
-                wineFromPath, "-ft", fileFormat.ToString()[1..], "-f", format, "-o", wineToFolderPath, "-w", w, "-h", h,
-                "-if", "CUBIC", "-singleproc"
+                wineFromPath, "-ft", fileFormat.ToString()[1..], "-f", format, "-o", wineToFolderPath,
+                "-w", w, "-h", h, "-if", "CUBIC", "-singleproc"
             };
+
+            if (TexconvConfig.DisableGpuTexconv)
+            {
+                argList.Add("-nogpu");
+            }
+
+            args = argList.ToArray();
         }
 
         // Use Proton prefix manager for texconv.exe execution

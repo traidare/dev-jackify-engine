@@ -2,6 +2,16 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.4.0 - 2025-12-06
+### GUI Integration
+* Added `--json` flag to `list-modlists` command for structured metadata output
+* New `download-modlist-images` command for batch image download
+* Added `--show-file-progress` flag for detailed progress tracking
+
+### GPU Acceleration
+* GPU-accelerated texture conversion via Proton/DXVK
+* Automatic NVIDIA and AMD dGPU detection and configuration
+
 ## Version 0.3.19 - 2025-11-13
 ### Download Reliability Improvements
 * **Resume Support**: Fixed download restart issue - partial files are now preserved on timeout, allowing resume instead of restart

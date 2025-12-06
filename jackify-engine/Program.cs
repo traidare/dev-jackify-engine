@@ -1,6 +1,7 @@
 ﻿using System;
 using System.CommandLine;
 using System.CommandLine.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -29,6 +30,22 @@ internal class Program
     {
         // Check for debug mode
         bool debugMode = Array.IndexOf(args, "--debug") >= 0;
+        
+        // Check for show-file-progress flag (enables FILE_PROGRESS output for Jackify GUI)
+        bool showFileProgress = Array.IndexOf(args, "--show-file-progress") >= 0;
+        Wabbajack.Common.ConsoleOutput.ShowFileProgress = showFileProgress;
+
+        // Check for disable-gpu-texconv flag (fallback to CPU-only texconv behavior)
+        // This allows Jackify to provide an escape hatch if GPU acceleration ever
+        // causes hash mismatches or stability issues on specific systems.
+        bool disableGpuTexconv = Array.IndexOf(args, "--disable-gpu-texconv") >= 0;
+        Wabbajack.Common.TexconvConfig.DisableGpuTexconv = disableGpuTexconv;
+
+        // Remove engine-only flags before passing args to System.CommandLine
+        // to avoid unknown option errors in the CLI verbs.
+        var filteredArgs = args
+            .Where(a => a != "--show-file-progress" && a != "--disable-gpu-texconv")
+            .ToArray();
         
         var host = Host.CreateDefaultBuilder(Array.Empty<string>())
             .ConfigureLogging(builder => AddLogging(builder, debugMode))
@@ -60,7 +77,7 @@ internal class Program
             }).Build();
 
         var service = host.Services.GetService<CommandLineBuilder>();
-        return await service!.Run(args);
+        return await service!.Run(filteredArgs);
     }
     
     private static void AddLogging(ILoggingBuilder loggingBuilder, bool debugMode = false)

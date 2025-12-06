@@ -82,16 +82,93 @@ public class DownloadWabbajackFile
 
         output.Parent.CreateDirectory();
 
-        // Progress printer: current/total and MB/s like install
+        // Use progress callback with rolling average smoothing (standard approach)
+        // Most download managers use callbacks but smooth them over a time window
         var started = DateTime.UtcNow;
-        await _dispatcher.Download(archive, output, token, (processed, total) =>
+        var totalMB = archive.Size / 1024.0 / 1024.0;
+        var samples = new System.Collections.Generic.Queue<(DateTime time, long bytes)>();
+        const double sampleWindowSeconds = 3.0; // 3-second rolling window for smoothing
+        
+        // Initialize with existing file size if resuming
+        long initialBytes = output.FileExists() ? output.Size() : 0;
+        if (initialBytes > 0)
         {
-            var elapsed = DateTime.UtcNow - started;
-            var speedMBps = elapsed.TotalSeconds > 0 ? (processed / 1024.0 / 1024.0) / elapsed.TotalSeconds : 0;
-            var totalMB = total / 1024.0 / 1024.0;
-            var processedMB = processed / 1024.0 / 1024.0;
-            ConsoleOutput.PrintProgressWithDuration($"Downloading .wabbajack ({processedMB:F1}/{totalMB:F1}MB) - {speedMBps:F1}MB/s");
-        });
+            samples.Enqueue((DateTime.UtcNow, initialBytes));
+        }
+        
+        // Update display periodically from samples
+        var displayCts = new CancellationTokenSource();
+        var displayTask = Task.Run(async () =>
+        {
+            while (!displayCts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(500, displayCts.Token); // Update display every 500ms
+                    
+                    var now = DateTime.UtcNow;
+                    
+                    // Remove samples older than our window
+                    var cutoffTime = now.AddSeconds(-sampleWindowSeconds);
+                    while (samples.Count > 0 && samples.Peek().time < cutoffTime)
+                    {
+                        samples.Dequeue();
+                    }
+                    
+                    // Calculate speed from samples in window (oldest to newest)
+                    double speedMBps = 0;
+                    long currentBytes = initialBytes;
+                    if (samples.Count >= 2)
+                    {
+                        var oldest = samples.Peek();
+                        // Get newest by converting to array (Queue doesn't have Last())
+                        var sampleArray = samples.ToArray();
+                        var newest = sampleArray[sampleArray.Length - 1];
+                        var timeSpan = (newest.time - oldest.time).TotalSeconds;
+                        var bytesDelta = newest.bytes - oldest.bytes;
+                        
+                        if (timeSpan > 0.5 && bytesDelta > 0) // Need at least 0.5 seconds of data
+                        {
+                            speedMBps = (bytesDelta / 1024.0 / 1024.0) / timeSpan;
+                        }
+                        currentBytes = newest.bytes;
+                    }
+                    else if (samples.Count == 1)
+                    {
+                        currentBytes = samples.Peek().bytes;
+                    }
+                    
+                    var processedMB = currentBytes / 1024.0 / 1024.0;
+                    ConsoleOutput.PrintProgressWithDuration($"Downloading .wabbajack ({processedMB:F1}/{totalMB:F1}MB) - {speedMBps:F1}MB/s");
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, displayCts.Token);
+        
+        try
+        {
+            // Use progress callback to collect samples (accurate, immediate)
+            await _dispatcher.Download(archive, output, token, (processed, total) =>
+            {
+                // Add sample from callback (this is the accurate bytes downloaded)
+                samples.Enqueue((DateTime.UtcNow, processed));
+            }, null);
+        }
+        finally
+        {
+            displayCts.Cancel();
+            try
+            {
+                await displayTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Swallow cancellation
+            }
+        }
 
         // Clear progress line after completion
         ConsoleOutput.ClearProgressLine();

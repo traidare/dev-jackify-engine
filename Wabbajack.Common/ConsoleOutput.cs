@@ -5,6 +5,13 @@ namespace Wabbajack.Common;
 public static class ConsoleOutput
 {
     private static readonly DateTime _startTime = DateTime.UtcNow;
+    
+    /// <summary>
+    /// Controls whether FILE_PROGRESS lines are output.
+    /// Default is false (suppressed) - set to true via --show-file-progress flag.
+    /// Jackify GUI should always pass --show-file-progress to enable detailed file progress.
+    /// </summary>
+    public static bool ShowFileProgress { get; set; } = false;
 
     /// <summary>
     /// Prints a message with a duration timestamp (elapsed time since program start)
@@ -72,9 +79,15 @@ public static class ConsoleOutput
     /// Format: [FILE_PROGRESS] Operation: filename (percent%) [speed] (completed/total)
     /// Outputs to stderr to keep it separate from normal stdout.
     /// Uses \r for all progress updates (overwrites same line) to prevent console spam.
+    /// Only outputs if ShowFileProgress is true (enabled via --show-file-progress flag).
     /// </summary>
     public static void PrintFileProgress(string operation, string filename, double percent, string speed, int? completed = null, int? total = null)
     {
+        // Suppress FILE_PROGRESS output unless --show-file-progress flag is set
+        // This keeps manual runs clean while allowing Jackify GUI to enable detailed progress
+        if (!ShowFileProgress)
+            return;
+        
         // Format percent - use integer if whole number, otherwise one decimal place
         var percentStr = percent % 1.0 == 0 ? $"{(int)percent}" : $"{percent:F1}";
         
