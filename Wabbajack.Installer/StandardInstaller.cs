@@ -410,6 +410,44 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         }
     }
 
+    /// <summary>
+    /// Finds a file path case-insensitively by walking the directory tree.
+    /// Required for Linux where BSA file paths may have different case than extracted files.
+    /// Example: state.Path = "scripts/hardcore/file.pex" but actual file is "scripts/Hardcore/file.pex"
+    /// </summary>
+    private AbsolutePath? FindFilePathCaseInsensitive(AbsolutePath baseDir, RelativePath relativePath)
+    {
+        try
+        {
+            var parts = relativePath.ToString().Split('/');
+            var currentPath = baseDir;
+
+            foreach (var part in parts)
+            {
+                if (!currentPath.DirectoryExists())
+                    return null;
+
+                // Find matching directory/file with case-insensitive comparison
+                var directories = currentPath.EnumerateDirectories().Select(d => (AbsolutePath)d);
+                var files = currentPath.EnumerateFiles().Select(f => (AbsolutePath)f);
+                var entries = directories.Concat(files).ToList();
+                var match = entries.FirstOrDefault(e =>
+                    e.FileName.ToString().Equals(part, StringComparison.OrdinalIgnoreCase));
+
+                if (match == null)
+                    return null;
+
+                currentPath = match;
+            }
+
+            return currentPath.FileExists() ? currentPath : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private async Task BuildBSAs(CancellationToken token)
     {
         var bsas = ModList.Directives.OfType<CreateBSA>().ToList();
@@ -491,6 +529,22 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                     // Files may have been extracted with backslashes in their names
                     var backslashPath = state.Path.ToString().Replace("/", "\\");
                     filePath = sourceDir.Combine(backslashPath.ToRelativePath());
+                }
+
+                // Case sensitivity fallback: BSA state paths are case-sensitive (e.g., "scripts/hardcore"),
+                // but actual extracted files may have different case (e.g., "scripts/Hardcore").
+                // Search for the file case-insensitively if exact match fails.
+                if (!filePath.FileExists())
+                {
+                    var caseInsensitivePath = FindFilePathCaseInsensitive(sourceDir, state.Path);
+                    if (caseInsensitivePath.HasValue)
+                    {
+                        filePath = caseInsensitivePath.Value;
+                    }
+                    else
+                    {
+                        throw new FileNotFoundException($"Could not find BSA source file (tried case-insensitive): {state.Path}", filePath.ToString());
+                    }
                 }
 
                 var fs = filePath.Open(FileMode.Open, FileAccess.Read, FileShare.Read);

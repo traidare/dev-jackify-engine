@@ -286,7 +286,42 @@ public static class AbsolutePathExtensions
     {
         if (path.Depth > 1 && !path.Parent.DirectoryExists())
             path.Parent.CreateDirectory();
-        Directory.CreateDirectory(ToNativePath(path));
+
+        // Fast path: Check if directory already exists with exact casing (99% of cases)
+        var nativePath = ToNativePath(path);
+        if (Directory.Exists(nativePath))
+            return;
+
+        // Handle case-insensitive directory lookup on Linux (e.g., BA2 archives with inconsistent case)
+        // Only check for case differences when exact match doesn't exist (slow path, rare)
+        if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) && path.Depth > 0)
+        {
+            var parent = path.Parent;
+            if (parent.Depth > 0 && parent.DirectoryExists())
+            {
+                var dirName = path.FileName.ToString();
+                var parentPath = parent.ToString();
+                try
+                {
+                    // Check if a directory with different case already exists
+                    foreach (var dir in Directory.GetDirectories(parentPath))
+                    {
+                        var dirInfo = new DirectoryInfo(dir);
+                        if (string.Equals(dirInfo.Name, dirName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Directory with different case exists - no need to create
+                            return;
+                        }
+                    }
+                }
+                catch
+                {
+                    // If enumeration fails, continue with normal creation
+                }
+            }
+        }
+
+        Directory.CreateDirectory(nativePath);
     }
 
     public static void DeleteDirectory(this AbsolutePath path, bool dontDeleteIfNotEmpty = false)

@@ -57,7 +57,7 @@ public abstract class AChunkedBufferingStream : Stream
         var availableRead = (ulong)chunkData!.Length - chunkOffset;
         var toRead = Math.Min((ulong)count, availableRead);
 
-        Array.Copy(chunkData, (uint)chunkOffset, buffer, offset, count);
+        Array.Copy(chunkData, (uint)chunkOffset, buffer, offset, (int)toRead);
         return (int)toRead;
     }
 

@@ -530,11 +530,19 @@ public abstract class AInstaller<T>
                 // Update progress tracking
                 Interlocked.Increment(ref processedFiles);
                 Interlocked.Add(ref processedSize, file.Size);
-                
+
                 // Overall progress counter is now printed by the display task (every 1 second)
                 // No need to print it here for every file - that causes console spam
-                
+
                 var destPath = file.To.RelativeTo(_configuration.Install);
+
+                // Case sensitivity fix: BSA temp files may have inconsistent case in directives
+                // Normalize to use existing directory case to prevent duplicate directories
+                if (destPath.ToString().Contains("TEMP_BSA_FILES"))
+                {
+                    destPath = NormalizePathToCaseInsensitive(destPath) ?? destPath;
+                }
+
                 switch (file)
                 {
                     case PatchedFromArchive pfa:
@@ -630,6 +638,65 @@ public abstract class AInstaller<T>
     {
         _logger.LogError("Hashes for {Path} did not match, expected {Expected} got {Got}", file.To, file.Hash, gotHash);
         throw new Exception($"Hashes for {file.To} did not match, expected {file.Hash} got {gotHash}");
+    }
+
+    /// <summary>
+    /// Normalizes a path to use existing directory case on case-sensitive filesystems.
+    /// Used for BSA temp files where directives may have inconsistent case.
+    /// </summary>
+    private AbsolutePath? NormalizePathToCaseInsensitive(AbsolutePath path)
+    {
+        try
+        {
+            var parts = path.ToString().Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+                return path;
+
+            var currentPath = "/".ToAbsolutePath();
+
+            for (int i = 0; i < parts.Length; i++)
+            {
+                var part = parts[i];
+                var isLastPart = (i == parts.Length - 1);
+
+                if (isLastPart)
+                {
+                    currentPath = currentPath.Combine(part);
+                    break;
+                }
+
+                var nextPath = currentPath.Combine(part);
+                if (nextPath.DirectoryExists())
+                {
+                    currentPath = nextPath;
+                }
+                else if (currentPath.DirectoryExists())
+                {
+                    var existingDirs = currentPath.EnumerateDirectories().ToList();
+                    var caseInsensitiveMatch = existingDirs.FirstOrDefault(d =>
+                        d.FileName.ToString().Equals(part, StringComparison.OrdinalIgnoreCase));
+
+                    if (caseInsensitiveMatch != default(AbsolutePath))
+                    {
+                        currentPath = caseInsensitiveMatch;
+                    }
+                    else
+                    {
+                        currentPath = nextPath;
+                    }
+                }
+                else
+                {
+                    currentPath = nextPath;
+                }
+            }
+
+            return currentPath;
+        }
+        catch
+        {
+            return null;
+        }
     }
     
     

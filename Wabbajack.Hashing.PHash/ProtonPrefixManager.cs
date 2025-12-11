@@ -22,19 +22,31 @@ namespace Wabbajack.Hashing.PHash
         private readonly string _gpuDisplay;
         private bool _gpuConfigLogged = false;
 
+        // Cache GPU detection results to avoid repeated lspci/DRI scans on every texture conversion
+        private readonly bool _hasMultipleGpus;
+        private readonly bool _hasNvidiaGpu;
+
         public ProtonPrefixManager(ILogger logger)
         {
             _logger = logger;
             _protonDetector = new ProtonDetector(NullLogger<ProtonDetector>.Instance);
-            
+
             // Create prefix in {jackify_data_dir}/.prefix-<UUID>
             _prefixBaseDir = JackifyConfig.GetDataDirectory();
             _currentPrefix = _prefixBaseDir.Combine($".prefix-{Guid.NewGuid():N}");
-            
+
             // Get valid DISPLAY for GPU acceleration
             // GPU-accelerated DirectX Compute Shaders require a valid DISPLAY
             // Use user's display if available, otherwise fall back to :0
             _gpuDisplay = GetValidDisplay();
+
+            // Perform GPU detection once during construction to avoid thousands of system calls
+            // For modlists with thousands of textures (e.g., Magnum Opus), this prevents:
+            // - Thousands of lspci subprocess spawns
+            // - Thousands of /dev/dri directory scans
+            _hasMultipleGpus = DetectMultipleGpus();
+            _hasNvidiaGpu = DetectNvidiaGpu();
+
             _logger.LogDebug("Using DISPLAY={Display} for GPU-accelerated texture processing", _gpuDisplay);
         }
         
@@ -62,8 +74,9 @@ namespace Wabbajack.Hashing.PHash
         /// <summary>
         /// Detects if the system has multiple GPUs (iGPU + dGPU setup).
         /// Returns true if multiple DRI devices (card0, card1, etc.) are found.
+        /// Called once during construction and cached.
         /// </summary>
-        private bool HasMultipleGpus()
+        private bool DetectMultipleGpus()
         {
             try
             {
@@ -73,13 +86,13 @@ namespace Wabbajack.Hashing.PHash
                     _logger.LogDebug("GPU_DETECTION: /dev/dri does not exist");
                     return false;
                 }
-                
+
                 // Count DRI card devices
                 var cardCount = Directory.GetFiles(driPath, "card*")
                     .Count(f => File.Exists(f));
-                
+
                 _logger.LogDebug("GPU_DETECTION: Found {Count} DRI card devices", cardCount);
-                
+
                 // Multiple GPUs if we have more than one card device
                 return cardCount > 1;
             }
@@ -94,8 +107,9 @@ namespace Wabbajack.Hashing.PHash
         /// <summary>
         /// Detects if the system has an NVIDIA GPU.
         /// Checks lspci output for NVIDIA VGA controllers.
+        /// Called once during construction and cached.
         /// </summary>
-        private bool HasNvidiaGpu()
+        private bool DetectNvidiaGpu()
         {
             try
             {
@@ -109,21 +123,21 @@ namespace Wabbajack.Hashing.PHash
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
-                
+
                 using var process = Process.Start(startInfo);
                 if (process == null)
                 {
                     _logger.LogDebug("GPU_DETECTION: lspci process failed to start");
                     return false;
                 }
-                
+
                 var output = process.StandardOutput.ReadToEnd();
                 process.WaitForExit();
-                
+
                 // Check if output contains NVIDIA VGA controller
                 var hasNvidia = output.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) &&
                                output.Contains("VGA", StringComparison.OrdinalIgnoreCase);
-                
+
                 if (hasNvidia)
                 {
                     _logger.LogDebug("GPU_DETECTION: NVIDIA GPU detected via lspci");
@@ -132,7 +146,7 @@ namespace Wabbajack.Hashing.PHash
                 {
                     _logger.LogDebug("GPU_DETECTION: No NVIDIA GPU found in lspci output");
                 }
-                
+
                 return hasNvidia;
             }
             catch (Exception ex)
@@ -213,7 +227,7 @@ namespace Wabbajack.Hashing.PHash
                 }
                 _logger.LogDebug("Using user-specified NVIDIA GPU environment variables");
             }
-            else if (HasNvidiaGpu() && HasMultipleGpus())
+            else if (_hasNvidiaGpu && _hasMultipleGpus)
             {
                 // NVIDIA dGPU detected in dual-GPU system - set NVIDIA variables to use dGPU
                 env["__NV_PRIME_RENDER_OFFLOAD"] = "1";
@@ -235,7 +249,7 @@ namespace Wabbajack.Hashing.PHash
                     // User has explicitly set DRI_PRIME - respect their choice
                     env["DRI_PRIME"] = driPrime;
                 }
-                else if (HasMultipleGpus())
+                else if (_hasMultipleGpus)
                 {
                     // Multiple GPUs detected (AMD/Mesa) - default to dGPU for better performance
                     env["DRI_PRIME"] = "1";
