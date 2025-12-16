@@ -1039,8 +1039,27 @@ public abstract class AInstaller<T>
         NextStep(Consts.StepHashing, "Hashing Archives", 0);
         _logger.LogInformation("{Duration} Looking for files to hash", ConsoleOutput.GetDurationTimestamp());
 
+        // Collect all game folders – primary plus other games
+        var gameFolders = new HashSet<AbsolutePath>();
+
+        void AddIfValid(AbsolutePath p)
+        {
+            if (p != default && p != AbsolutePath.Empty)
+                gameFolders.Add(p);
+        }
+
+        AddIfValid(_gameLocator.GameLocation(_configuration.Game));
+
+        // OtherGames should only be non-null if the compiled list specifically named othergames
+        foreach (var g in _configuration.OtherGames ?? Array.Empty<Game>())
+        {
+            _logger.LogInformation("{Duration} Also searching othergame folder for {Game}", ConsoleOutput.GetDurationTimestamp(), g);
+            AddIfValid(_gameLocator.GameLocation(g));
+        }
+
+        // Enumerate downloads + every game folder
         var allFiles = _configuration.Downloads.EnumerateFiles()
-            .Concat(_gameLocator.GameLocation(_configuration.Game).EnumerateFiles())
+            .Concat(gameFolders.SelectMany(p => p.EnumerateFiles()))
             .ToList();
 
         _logger.LogInformation("{Duration} Getting archive sizes", ConsoleOutput.GetDurationTimestamp());
@@ -1117,7 +1136,7 @@ public abstract class AInstaller<T>
 
         var hashResults = await
             toHash
-                .PMapAll(async e =>
+                .PMapAll(_limiter, async e =>
                 {
                     var filename = e.FileName.ToString();
                     var fileSize = e.Size();

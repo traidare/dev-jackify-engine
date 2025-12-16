@@ -113,7 +113,7 @@ public class GoogleDriveDownloader : ADownloader<DTOs.DownloadStates.GoogleDrive
         if (download)
         {
             var initialUrl = $"https://drive.google.com/uc?id={state.Id}&export=download";
-            string url = initialUrl;
+            string url = string.Empty;
             var qb = new QueryBuilder();
             var parameters = new Dictionary<string, string>();
 
@@ -151,12 +151,16 @@ public class GoogleDriveDownloader : ADownloader<DTOs.DownloadStates.GoogleDrive
                     }
                 }
             }
+            else if(warning == default && response.Content.Headers.ContentType?.MediaType == "application/octet-stream")
+            {
+                qb.Add("id", state.Id);
+                qb.Add("export", "download");
+                url = $"https://drive.usercontent.google.com/download";
+            }
+
             response.Dispose();
 
-            var finalUrl = url + qb.ToString();
-            if (string.IsNullOrEmpty(finalUrl))
-                finalUrl = initialUrl;
-
+            var finalUrl = string.IsNullOrEmpty(url) ? initialUrl : url + qb.ToString();
             var httpState = new HttpRequestMessage(HttpMethod.Get, finalUrl);
             httpState.AddChromeAgent();
             return httpState;

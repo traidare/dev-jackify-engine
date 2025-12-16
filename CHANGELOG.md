@@ -20,6 +20,10 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
 * **Meta File Progress**: Added FILE_PROGRESS output for meta file writing showing real-time progress (e.g., "Writing: archive.7z.meta (45.2%) (2324/6089)")
 * **Progress Visibility**: Users can now see meta file writing activity in both CLI and Jackify GUI Activity Window
 
+### Upstream Updates
+* **Google Drive Downloads**: Fixed handling of direct download links (application/octet-stream content type) from Google Drive
+* **Multi-Game File Sourcing**: Added support for sourcing game files from multiple game folders (e.g., Fallout: New Vegas can source files from Fallout 3)
+
 ## Version 0.4.0 - 2025-12-06
 ### GUI Integration
 * Added `--json` flag to `list-modlists` command for structured metadata output
