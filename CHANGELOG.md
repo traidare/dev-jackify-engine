@@ -2,6 +2,24 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.4.2 - 2025-12-16
+### Critical Bug Fixes
+* **Download Reliability**: Fixed "Source array was not long enough" exception in chunked download buffering causing random download failures
+  - Fixed incorrect bitwise XOR operator (should be bitwise AND with inverted mask) in chunk offset calculation
+  - Added missing Position increment after array copy
+  - Added destination buffer bounds checking to prevent "Destination array was not long enough" errors
+* **BSA Case Sensitivity**: Added case-insensitive path matching for BSA building on Linux (handles "scripts/hardcore" vs "scripts/Hardcore" mismatches)
+* **Meta File Write Failures**: Meta file creation failures no longer abort completed installations (meta files are non-critical post-install metadata)
+
+### Performance Improvements
+* **GPU Detection Caching**: Cached GPU detection results to eliminate thousands of redundant lspci/DRI scans during texture processing
+* **Texture Processing Speed**: Significant performance improvement for large modlists with many texture files
+* **Hash Cache Optimization**: Meta file writing now reuses hashes from HashArchives phase to avoid re-hashing already processed files
+
+### User Experience Improvements
+* **Meta File Progress**: Added FILE_PROGRESS output for meta file writing showing real-time progress (e.g., "Writing: archive.7z.meta (45.2%) (2324/6089)")
+* **Progress Visibility**: Users can now see meta file writing activity in both CLI and Jackify GUI Activity Window
+
 ## Version 0.4.0 - 2025-12-06
 ### GUI Integration
 * Added `--json` flag to `list-modlists` command for structured metadata output

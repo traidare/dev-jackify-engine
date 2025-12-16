@@ -315,25 +315,40 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         var downloadFiles = _configuration.Downloads.EnumerateFiles()
             .Where(download => download.Extension != Ext.Meta)
             .ToArray();
-        
+
         _logger.LogInformation("{Duration} Writing Metas ({Count} files)", ConsoleOutput.GetDurationTimestamp(), downloadFiles.Length);
-        
+
+        var totalFiles = downloadFiles.Length;
         var completedCount = 0;
+
         await downloadFiles.PDoAll(async download =>
             {
                 var metaFile = download.WithExtension(Ext.Meta);
 
                 var found = bySize[download.Size()];
                 Hash hash = default;
-                try
+
+                // Try to get hash from already-hashed archives first to avoid re-hashing
+                var existingHash = HashedArchives.FirstOrDefault(kvp => kvp.Value.Equals(download));
+                if (existingHash.Key != default)
                 {
-                    hash = await FileHashCache.FileHashCachedAsync(download, token);
+                    // File was already hashed during HashArchives - use cached hash
+                    hash = existingHash.Key;
                 }
-                catch(Exception ex)
+                else
                 {
-                    _logger.LogError($"Failed to get hash for file {download}!");
-                    throw;
+                    // File not in HashedArchives, need to hash it
+                    try
+                    {
+                        hash = await FileHashCache.FileHashCachedAsync(download, token);
+                    }
+                    catch(Exception ex)
+                    {
+                        _logger.LogError($"Failed to get hash for file {download}! Skipping meta file creation. Error: {ex.Message}");
+                        return; // Skip this file and continue with others - meta files are not critical
+                    }
                 }
+
                 var archive = found.FirstOrDefault(f => f.Hash == hash);
 
                 IEnumerable<string> meta;
@@ -394,9 +409,28 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                     meta = AddInstalled(_downloadDispatcher.MetaIni(archive));
                 }
 
-                await metaFile.WriteAllLinesAsync(meta, token);
-                Interlocked.Increment(ref completedCount);
+                try
+                {
+                    await metaFile.WriteAllLinesAsync(meta, token);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError($"Failed to write meta file {metaFile}! Skipping. Error: {ex.Message}");
+                    // Meta files are non-critical post-install metadata - continue installation
+                }
+
+                // Update progress counter and output FILE_PROGRESS
+                var current = Interlocked.Increment(ref completedCount);
+                var percent = (double)current / totalFiles * 100.0;
+                var metaFilename = metaFile.FileName.ToString();
+
+                // Output FILE_PROGRESS for GUI to capture
+                ConsoleOutput.PrintFileProgress("Writing", metaFilename, percent, "", current, totalFiles);
             });
+
+        // Final completion message
+        Console.WriteLine(); // Newline after progress
+        _logger.LogInformation("{Duration} Completed writing {count}/{total} meta files", ConsoleOutput.GetDurationTimestamp(), completedCount, totalFiles);
     }
 
     private static IEnumerable<string> AddInstalled(IEnumerable<string> getMetaIni)
@@ -411,36 +445,54 @@ public class StandardInstaller : AInstaller<StandardInstaller>
     }
 
     /// <summary>
-    /// Finds a file path case-insensitively by walking the directory tree.
-    /// Required for Linux where BSA file paths may have different case than extracted files.
-    /// Example: state.Path = "scripts/hardcore/file.pex" but actual file is "scripts/Hardcore/file.pex"
+    /// Normalize path to use existing case on case-sensitive filesystems.
+    /// Reuses the working implementation from AInstaller.
     /// </summary>
-    private AbsolutePath? FindFilePathCaseInsensitive(AbsolutePath baseDir, RelativePath relativePath)
+    private AbsolutePath? NormalizePathToCaseInsensitive(AbsolutePath path)
     {
         try
         {
-            var parts = relativePath.ToString().Split('/');
-            var currentPath = baseDir;
+            var parts = path.ToString().Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+                return path;
 
-            foreach (var part in parts)
+            var currentPath = "/".ToAbsolutePath();
+
+            for (int i = 0; i < parts.Length; i++)
             {
-                if (!currentPath.DirectoryExists())
-                    return null;
+                var part = parts[i];
+                var nextPath = currentPath.Combine(part);
 
-                // Find matching directory/file with case-insensitive comparison
-                var directories = currentPath.EnumerateDirectories().Select(d => (AbsolutePath)d);
-                var files = currentPath.EnumerateFiles().Select(f => (AbsolutePath)f);
-                var entries = directories.Concat(files).ToList();
-                var match = entries.FirstOrDefault(e =>
-                    e.FileName.ToString().Equals(part, StringComparison.OrdinalIgnoreCase));
+                if (nextPath.DirectoryExists() || nextPath.FileExists())
+                {
+                    currentPath = nextPath;
+                }
+                else if (currentPath.DirectoryExists())
+                {
+                    // Try case-insensitive match
+                    var entries = currentPath.EnumerateDirectories(recursive: false)
+                        .Concat(currentPath.EnumerateFiles("*", recursive: false))
+                        .ToList();
 
-                if (match == null)
-                    return null;
+                    var caseInsensitiveMatch = entries.FirstOrDefault(e =>
+                        e.FileName.ToString().Equals(part, StringComparison.OrdinalIgnoreCase));
 
-                currentPath = match;
+                    if (caseInsensitiveMatch != default(AbsolutePath))
+                    {
+                        currentPath = caseInsensitiveMatch;
+                    }
+                    else
+                    {
+                        currentPath = nextPath;
+                    }
+                }
+                else
+                {
+                    currentPath = nextPath;
+                }
             }
 
-            return currentPath.FileExists() ? currentPath : null;
+            return currentPath;
         }
         catch
         {
@@ -521,29 +573,21 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
             var streams = await bsa.FileStates.PMapAllBatchedAsync(_limiter, async state =>
             {
-                // Try the normal path first
+                // Build the expected file path
                 var filePath = sourceDir.Combine(state.Path);
-                if (!filePath.FileExists())
-                {
-                    // Fallback: try with forward slashes converted to backslashes (Linux path issue)
-                    // Files may have been extracted with backslashes in their names
-                    var backslashPath = state.Path.ToString().Replace("/", "\\");
-                    filePath = sourceDir.Combine(backslashPath.ToRelativePath());
-                }
 
-                // Case sensitivity fallback: BSA state paths are case-sensitive (e.g., "scripts/hardcore"),
-                // but actual extracted files may have different case (e.g., "scripts/Hardcore").
-                // Search for the file case-insensitively if exact match fails.
+                // If file doesn't exist with exact case, normalize using the WORKING approach from AInstaller
                 if (!filePath.FileExists())
                 {
-                    var caseInsensitivePath = FindFilePathCaseInsensitive(sourceDir, state.Path);
-                    if (caseInsensitivePath.HasValue)
+                    // Use the same case normalization that works for file installation
+                    var normalizedPath = NormalizePathToCaseInsensitive(filePath);
+                    if (normalizedPath.HasValue && normalizedPath.Value.FileExists())
                     {
-                        filePath = caseInsensitivePath.Value;
+                        filePath = normalizedPath.Value;
                     }
                     else
                     {
-                        throw new FileNotFoundException($"Could not find BSA source file (tried case-insensitive): {state.Path}", filePath.ToString());
+                        throw new FileNotFoundException($"Could not find BSA source file: {state.Path} (searched: {filePath})", filePath.ToString());
                     }
                 }
 

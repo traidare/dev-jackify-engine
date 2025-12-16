@@ -45,19 +45,21 @@ public abstract class AChunkedBufferingStream : Stream
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
         if (Position >= Length) return 0;
-        
+
         var chunkId = (ulong)Position & _chunkMask;
         if (!_chunks.TryGetValue(chunkId, out var chunkData))
         {
             var chunk = await LoadChunk((long)chunkId, _chunkSize);
             _chunks.Add(chunkId, chunk);
         }
-        
-        var chunkOffset = (ulong)Position ^ _chunkMask;
+
+        var chunkOffset = (ulong)Position & ~_chunkMask;
         var availableRead = (ulong)chunkData!.Length - chunkOffset;
-        var toRead = Math.Min((ulong)count, availableRead);
+        var destinationAvailable = (ulong)(buffer.Length - offset);
+        var toRead = Math.Min(Math.Min((ulong)count, availableRead), destinationAvailable);
 
         Array.Copy(chunkData, (uint)chunkOffset, buffer, offset, (int)toRead);
+        Position += (long)toRead;
         return (int)toRead;
     }
 
