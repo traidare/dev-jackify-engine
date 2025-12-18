@@ -315,42 +315,49 @@ public class FileExtractor
                 IEnumerable<string> AllVariants(string input)
                 {
                     var forward = input.Replace("\\", "/");
-                    
-                    // Common case variations for directory names
-                    var caseVariants = new List<string> { input, forward };
-                    
-                    // Add case variations for common directory names
-                    var commonDirs = new Dictionary<string, string>
+
+                    // Generate all case combinations for each directory component
+                    var parts = forward.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                    var variants = new List<string>();
+
+                    // Generate variants: all lowercase, all as-is, and each component with first letter capitalized
+                    void GenerateVariants(string[] components, int index, string current)
                     {
-                        { "textures", "Textures" },
-                        { "meshes", "Meshes" },
-                        { "sounds", "Sounds" },
-                        { "music", "Music" },
-                        { "scripts", "Scripts" },
-                        { "interface", "Interface" }
-                    };
-                    
-                    foreach (var (lower, upper) in commonDirs)
-                    {
-                        if (input.Contains(lower, StringComparison.OrdinalIgnoreCase))
+                        if (index >= components.Length)
                         {
-                            // Replace with proper case
-                            var upperCase = input.Replace(lower, upper, StringComparison.OrdinalIgnoreCase);
-                            var upperCaseForward = upperCase.Replace("\\", "/");
-                            caseVariants.Add(upperCase);
-                            caseVariants.Add(upperCaseForward);
-                            
-                            // Also try lowercase variant
-                            var lowerCase = input.Replace(upper, lower, StringComparison.OrdinalIgnoreCase);
-                            var lowerCaseForward = lowerCase.Replace("\\", "/");
-                            caseVariants.Add(lowerCase);
-                            caseVariants.Add(lowerCaseForward);
+                            variants.Add(current.TrimStart('/'));
+                            return;
+                        }
+
+                        var part = components[index];
+                        var separator = index == 0 ? "" : "/";
+
+                        // Add original case
+                        GenerateVariants(components, index + 1, current + separator + part);
+
+                        // Add lowercase
+                        var lower = part.ToLowerInvariant();
+                        if (lower != part)
+                        {
+                            GenerateVariants(components, index + 1, current + separator + lower);
+                        }
+
+                        // Add capitalized (first letter uppercase, rest as-is)
+                        if (part.Length > 0)
+                        {
+                            var capitalized = char.ToUpperInvariant(part[0]) + part.Substring(1);
+                            if (capitalized != part && capitalized != lower)
+                            {
+                                GenerateVariants(components, index + 1, current + separator + capitalized);
+                            }
                         }
                     }
-                    
+
+                    GenerateVariants(parts, 0, "");
+
                     // Remove duplicates and generate quoted patterns
-                    var uniqueVariants = caseVariants.Distinct().ToList();
-                    
+                    var uniqueVariants = variants.Distinct().ToList();
+
                     foreach (var variant in uniqueVariants)
                     {
                         yield return $"\"{variant}\"";
@@ -362,10 +369,14 @@ public class FileExtractor
                 tmpFile = _manager.CreateFile();
                 await tmpFile.Value.Path.WriteAllLinesAsync(onlyFiles.SelectMany(f => AllVariants((string)f)),
                     token);
+
+                // Linux: Add -ssc- for case-insensitive pattern matching (handles "Fairy" vs "fairy" mismatches)
+                var extraArgs = RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? new[] { "-ssc-" } : Array.Empty<string>();
+
                 process.Arguments = new object[]
                 {
                     "x", "-bsp1", "-y", $"-o\"{dest}\"", source, $"@\"{tmpFile.Value.ToString()}\"", "-mmt=off"
-                };
+                }.Concat(extraArgs).ToArray();
             }
             else
             {
@@ -579,7 +590,7 @@ public class FileExtractor
                         f.Delete();
                         return (path, mapResult);
                     }
-                    catch (Exception ex) when (ex is FileNotFoundException || ex is DirectoryNotFoundException || 
+                    catch (Exception ex) when (ex is FileNotFoundException || ex is DirectoryNotFoundException ||
                                               ex is UnauthorizedAccessException || ex is ArgumentException)
                     {
                         _logger.LogError("Failed to process extracted file: {file} ({error})", f, ex.Message);
@@ -647,22 +658,22 @@ public class FileExtractor
             }
             
             _logger.LogDebug("Proton 7z.exe extraction completed successfully");
-            
+
             // Process extracted files - same as regular extraction
             var results = new Dictionary<RelativePath, T>();
             var extractedFiles = tempFolder.Path.EnumerateFiles(recursive: true);
-            
+
             foreach (var file in extractedFiles)
             {
                 var relativePath = file.RelativeTo(tempFolder.Path);
                 if (!shouldExtract(relativePath)) continue;
-                
+
                 var extractedFile = new ExtractedNativeFile(file);
                 var result = await mapfn(relativePath, extractedFile);
                 results[relativePath] = result;
                 file.Delete(); // Clean up like regular extraction
             }
-            
+
             return results;
         }
         finally

@@ -323,7 +323,23 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
         await downloadFiles.PDoAll(async download =>
             {
+                // Update progress counter at start so early returns still count
+                var current = Interlocked.Increment(ref completedCount);
+                var percent = (double)current / totalFiles * 100.0;
+
+                // Output progress (throttled to every 10 files)
+                if (current % 10 == 0 || current == totalFiles)
+                {
+                    ConsoleOutput.PrintFileProgress("Checking", download.FileName.ToString(), percent, "", current, totalFiles);
+                }
+
                 var metaFile = download.WithExtension(Ext.Meta);
+
+                // Fast path: If .meta already exists, skip entirely (don't hash)
+                if (metaFile.FileExists())
+                {
+                    return;
+                }
 
                 var found = bySize[download.Size()];
                 Hash hash = default;
@@ -418,14 +434,6 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                     _logger.LogError($"Failed to write meta file {metaFile}! Skipping. Error: {ex.Message}");
                     // Meta files are non-critical post-install metadata - continue installation
                 }
-
-                // Update progress counter and output FILE_PROGRESS
-                var current = Interlocked.Increment(ref completedCount);
-                var percent = (double)current / totalFiles * 100.0;
-                var metaFilename = metaFile.FileName.ToString();
-
-                // Output FILE_PROGRESS for GUI to capture
-                ConsoleOutput.PrintFileProgress("Writing", metaFilename, percent, "", current, totalFiles);
             });
 
         // Final completion message

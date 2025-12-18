@@ -407,5 +407,75 @@ public static class AbsolutePathExtensions
             .Select(p => (AbsolutePath) p);
     }
 
+    /// <summary>
+    /// Finds a file or directory using case-insensitive path matching on Linux.
+    /// Returns the actual path with correct casing, or null if not found.
+    /// Example: path="Foo/Bar/file.txt" finds "foo/BAR/FILE.TXT" if it exists.
+    ///
+    /// TODO: Consolidate all case-insensitive path handling to use this method:
+    ///  - AInstaller.NormalizePathToCaseInsensitive() (line 647)
+    ///  - ExtractedMemoryfile.FindExistingCaseVariant() (line 69)
+    ///  - ExtractedNativeFile.FindExistingCaseVariant() (line 73)
+    /// Currently these duplicate implementations exist for historical reasons.
+    /// </summary>
+    public static AbsolutePath? FindCaseInsensitive(this AbsolutePath baseDir, RelativePath relativePath)
+    {
+        var parts = relativePath.ToString().Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var currentPath = baseDir;
+
+        foreach (var part in parts)
+        {
+            if (!currentPath.DirectoryExists())
+                return null;
+
+            // Try exact match first (fast path)
+            var exactMatch = currentPath.Combine(part);
+            if (exactMatch.DirectoryExists() || exactMatch.FileExists())
+            {
+                currentPath = exactMatch;
+                continue;
+            }
+
+            // Case-insensitive search (slow path)
+            AbsolutePath? match = null;
+            try
+            {
+                // Check directories
+                foreach (var dir in currentPath.EnumerateDirectories(recursive: false))
+                {
+                    if (dir.FileName.ToString().Equals(part, StringComparison.OrdinalIgnoreCase))
+                    {
+                        match = dir;
+                        break;
+                    }
+                }
+
+                // Check files if no directory matched
+                if (match == null)
+                {
+                    foreach (var file in currentPath.EnumerateFiles("*", recursive: false))
+                    {
+                        if (file.FileName.ToString().Equals(part, StringComparison.OrdinalIgnoreCase))
+                        {
+                            match = file;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+
+            if (match == null)
+                return null;
+
+            currentPath = match.Value;
+        }
+
+        return currentPath.FileExists() || currentPath.DirectoryExists() ? currentPath : null;
+    }
+
     #endregion
 }

@@ -2,8 +2,11 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
-## Version 0.4.2 - 2025-12-16
+## Version 0.4.1 - TBD
 ### Critical Bug Fixes
+* **Archive Extraction Case Sensitivity**: Fixed extraction failures when 7zip normalizes mixed-case archive paths (e.g., `Fairy/` → `fairy/`)
+  - Added 7zip `-ssc-` flag and recursive path variant generation for case-insensitive matching
+  - Fixes "Sanity check error extracting...0 results, expected N" failures
 * **Download Reliability**: Fixed "Source array was not long enough" exception in chunked download buffering causing random download failures
   - Fixed incorrect bitwise XOR operator (should be bitwise AND with inverted mask) in chunk offset calculation
   - Added missing Position increment after array copy
@@ -12,13 +15,8 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
 * **Meta File Write Failures**: Meta file creation failures no longer abort completed installations (meta files are non-critical post-install metadata)
 
 ### Performance Improvements
-* **GPU Detection Caching**: Cached GPU detection results to eliminate thousands of redundant lspci/DRI scans during texture processing
-* **Texture Processing Speed**: Significant performance improvement for large modlists with many texture files
-* **Hash Cache Optimization**: Meta file writing now reuses hashes from HashArchives phase to avoid re-hashing already processed files
-
-### User Experience Improvements
-* **Meta File Progress**: Added FILE_PROGRESS output for meta file writing showing real-time progress (e.g., "Writing: archive.7z.meta (45.2%) (2324/6089)")
-* **Progress Visibility**: Users can now see meta file writing activity in both CLI and Jackify GUI Activity Window
+* **Meta File Optimization**: Skip writing .meta files that already exist, avoiding redundant hash operations
+* **Progress Tracking**: Thread-safe progress reporting with ConcurrentQueue for .wabbajack downloads
 
 ### Upstream Updates
 * **Google Drive Downloads**: Fixed handling of direct download links (application/octet-stream content type) from Google Drive

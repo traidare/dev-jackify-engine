@@ -211,16 +211,16 @@ public class Install
         // Use progress callback with rolling average smoothing (standard approach)
         // Most download managers use callbacks but smooth them over a time window
         var totalMB = archive.Size / 1024.0 / 1024.0;
-        var samples = new System.Collections.Generic.Queue<(DateTime time, long bytes)>();
+        var samples = new ConcurrentQueue<(DateTime time, long bytes)>();
         const double sampleWindowSeconds = 3.0; // 3-second rolling window for smoothing
-        
+
         // Initialize with existing file size if resuming
         long initialBytes = wabbajack.FileExists() ? wabbajack.Size() : 0;
         if (initialBytes > 0)
         {
             samples.Enqueue((DateTime.UtcNow, initialBytes));
         }
-        
+
         // Update display periodically from samples
         var displayCts = new CancellationTokenSource();
         var displayTask = Task.Run(async () =>
@@ -230,39 +230,39 @@ public class Install
                 try
                 {
                     await Task.Delay(500, displayCts.Token); // Update display every 500ms
-                    
+
                     var now = DateTime.UtcNow;
-                    
+
                     // Remove samples older than our window
                     var cutoffTime = now.AddSeconds(-sampleWindowSeconds);
-                    while (samples.Count > 0 && samples.Peek().time < cutoffTime)
+                    while (samples.TryPeek(out var oldest) && oldest.time < cutoffTime)
                     {
-                        samples.Dequeue();
+                        samples.TryDequeue(out _);
                     }
-                    
+
                     // Calculate speed from samples in window (oldest to newest)
                     double speedMBps = 0;
                     long currentBytes = initialBytes;
-                    if (samples.Count >= 2)
+                    var sampleArray = samples.ToArray(); // Thread-safe snapshot
+
+                    if (sampleArray.Length >= 2)
                     {
-                        var oldest = samples.Peek();
-                        // Get newest by converting to array (Queue doesn't have Last())
-                        var sampleArray = samples.ToArray();
+                        var oldest = sampleArray[0];
                         var newest = sampleArray[sampleArray.Length - 1];
                         var timeSpan = (newest.time - oldest.time).TotalSeconds;
                         var bytesDelta = newest.bytes - oldest.bytes;
-                        
+
                         if (timeSpan > 0.5 && bytesDelta > 0) // Need at least 0.5 seconds of data
                         {
                             speedMBps = (bytesDelta / 1024.0 / 1024.0) / timeSpan;
                         }
                         currentBytes = newest.bytes;
                     }
-                    else if (samples.Count == 1)
+                    else if (sampleArray.Length == 1)
                     {
-                        currentBytes = samples.Peek().bytes;
+                        currentBytes = sampleArray[0].bytes;
                     }
-                    
+
                     var processedMB = currentBytes / 1024.0 / 1024.0;
                     ConsoleOutput.PrintProgressWithDuration($"Downloading .wabbajack ({processedMB:F1}/{totalMB:F1}MB) - {speedMBps:F1}MB/s");
                 }
@@ -272,7 +272,7 @@ public class Install
                 }
             }
         }, displayCts.Token);
-        
+
         try
         {
             // Use progress callback to collect samples (accurate, immediate)
