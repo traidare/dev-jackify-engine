@@ -3,6 +3,14 @@
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
 ## Version 0.4.3 - 2025-12-21
+### Improvements
+* **Improved Error Logging**: Exception messages now display user-friendly error descriptions instead of technical stack traces
+  - User-friendly error messages are always shown (no `--debug` flag required)
+  - Technical messages like "Sequence contains no matching element" are translated to clear explanations
+  - File paths, hashes, and context are extracted and displayed prominently
+  - Stack traces and technical details (exception type, original message) are hidden by default, shown only with `--debug` flag
+  - Makes errors much more understandable for non-technical users
+
 ### Critical Bug Fixes
 * **Game File Download Case Sensitivity**: Fixed "Unable to download" errors for game files (Fallout4.exe, Data files, etc.) when modlist uses different casing than actual files
   - Added case-insensitive file lookup in `GameFileDownloader` using existing `FindCaseInsensitive()` method
