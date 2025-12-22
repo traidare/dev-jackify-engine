@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -6,7 +6,7 @@
         <TargetFramework Condition=" '$(OS)' != 'Windows_NT'">net8.0</TargetFramework>
         <Nullable>enable</Nullable>
         <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
-        <VERSION Condition=" '$(VERSION)' == ''">0.4.1</VERSION>
+        <VERSION Condition=" '$(VERSION)' == ''">0.4.3</VERSION>
         <Version>$(VERSION)</Version>
         <AssemblyName>jackify-engine</AssemblyName>
         <PublishTrimmed>false</PublishTrimmed>

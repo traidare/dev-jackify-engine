@@ -311,66 +311,25 @@ public class FileExtractor
 
             if (onlyFiles != null)
             {
-                //It's stupid that we have to do this, but 7zip's file pattern matching isn't very fuzzy
-                IEnumerable<string> AllVariants(string input)
+                // On Linux with -ssc- flag, 7zip does case-insensitive matching
+                // No need for AllVariants() exponential explosion
+                // On Windows, still need path separator variants but case is already insensitive
+                IEnumerable<string> GetPatterns(string input)
                 {
                     var forward = input.Replace("\\", "/");
 
-                    // Generate all case combinations for each directory component
-                    var parts = forward.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                    var variants = new List<string>();
-
-                    // Generate variants: all lowercase, all as-is, and each component with first letter capitalized
-                    void GenerateVariants(string[] components, int index, string current)
-                    {
-                        if (index >= components.Length)
-                        {
-                            variants.Add(current.TrimStart('/'));
-                            return;
-                        }
-
-                        var part = components[index];
-                        var separator = index == 0 ? "" : "/";
-
-                        // Add original case
-                        GenerateVariants(components, index + 1, current + separator + part);
-
-                        // Add lowercase
-                        var lower = part.ToLowerInvariant();
-                        if (lower != part)
-                        {
-                            GenerateVariants(components, index + 1, current + separator + lower);
-                        }
-
-                        // Add capitalized (first letter uppercase, rest as-is)
-                        if (part.Length > 0)
-                        {
-                            var capitalized = char.ToUpperInvariant(part[0]) + part.Substring(1);
-                            if (capitalized != part && capitalized != lower)
-                            {
-                                GenerateVariants(components, index + 1, current + separator + capitalized);
-                            }
-                        }
-                    }
-
-                    GenerateVariants(parts, 0, "");
-
-                    // Remove duplicates and generate quoted patterns
-                    var uniqueVariants = variants.Distinct().ToList();
-
-                    foreach (var variant in uniqueVariants)
-                    {
-                        yield return $"\"{variant}\"";
-                        yield return $"\"\\{variant}\"";
-                        yield return $"\"/{variant}\"";
-                    }
+                    // Just need forward slash variants (/, \, plain) - 7zip handles case via -ssc-
+                    yield return $"\"{forward}\"";
+                    yield return $"\"\\{forward}\"";
+                    yield return $"\"/{forward}\"";
                 }
 
                 tmpFile = _manager.CreateFile();
-                await tmpFile.Value.Path.WriteAllLinesAsync(onlyFiles.SelectMany(f => AllVariants((string)f)),
+                await tmpFile.Value.Path.WriteAllLinesAsync(onlyFiles.SelectMany(f => GetPatterns((string)f)),
                     token);
 
-                // Linux: Add -ssc- for case-insensitive pattern matching (handles "Fairy" vs "fairy" mismatches)
+                // Linux: Add -ssc- for case-insensitive pattern matching
+                // This eliminates the need for exponential AllVariants() case generation
                 var extraArgs = RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? new[] { "-ssc-" } : Array.Empty<string>();
 
                 process.Arguments = new object[]
@@ -384,14 +343,6 @@ public class FileExtractor
             }
 
             _logger.LogTrace("{prog} {args}", process.Path, process.Arguments);
-            
-            if (tmpFile != null)
-            {
-                var patternContent = await tmpFile.Value.Path.ReadAllTextAsync();
-                var lines = patternContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                _logger.LogDebug("EXTRACTION DEBUG: {archive} - Pattern file {patternFile} has {lines} lines, size {size} bytes", 
-                    source.FileName, tmpFile.Value.Path.FileName, lines.Length, patternContent.Length);
-            }
 
             var totalSize = source.Size();
             var lastPercent = 0;

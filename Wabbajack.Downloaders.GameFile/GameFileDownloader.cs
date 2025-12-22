@@ -1,4 +1,4 @@
-﻿using Wabbajack.Downloaders.Interfaces;
+using Wabbajack.Downloaders.Interfaces;
 using Wabbajack.DTOs;
 using Wabbajack.DTOs.DownloadStates;
 using Wabbajack.DTOs.Validation;

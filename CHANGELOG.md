@@ -2,7 +2,27 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
-## Version 0.4.1 - TBD
+## Version 0.4.3 - 2025-12-21
+### Critical Bug Fixes
+* **Game File Download Case Sensitivity**: Fixed "Unable to download" errors for game files (Fallout4.exe, Data files, etc.) when modlist uses different casing than actual files
+  - Added case-insensitive file lookup in `GameFileDownloader` using existing `FindCaseInsensitive()` method
+  - Fixes: Modlist has `fallout4.exe` but actual file is `Fallout4.exe` on Linux filesystem
+  - Affects: FO4 modlists like Anomaly that require game file downloads
+  - Root cause: Linux filesystems are case-sensitive, modlists compiled on Windows use lowercase paths
+* **Archive Extraction Pattern File Explosion**: Eliminated exponential case variant generation causing multi-GB pattern files and installation failures
+  - OLD: AllVariants() generated 3^N case combinations per path (N = directory depth), creating up to 531,441 pattern lines per deeply nested file
+  - User-reported symptom: 3.5GB pattern file found in temp directory, matching calculated 4.5GB for 4,808 files
+  - NEW: Simple path separator variants (3 lines per file) + 7zip `-ssc-` flag for case-insensitive matching
+  - Reduction: 2.5 billion pattern lines → 14,424 lines (173,000x smaller), 4.5GB → 2MB pattern file
+  - Fixes: Installation crashes, out-of-memory exceptions, and "exit code 7" errors during archive extraction
+  - Regression introduced in v0.4.1 when AllVariants() recursive case generation was added
+* **File Installation Case Sensitivity**: Fixed DirectoryNotFoundException during file installation when directory case mismatches
+  - Path normalization now happens BEFORE CreateDirectory() instead of catching exception after
+  - Fixes: modlist directive says `scripts/` but `Scripts/` exists on disk → use existing `Scripts/` directory
+  - Prevents creation of duplicate directories with different cases
+  - Applies to both ExtractedNativeFile and ExtractedMemoryFile code paths
+
+## Version 0.4.1 - 2025-12-19
 ### Critical Bug Fixes
 * **Archive Extraction Case Sensitivity**: Fixed extraction failures when 7zip normalizes mixed-case archive paths (e.g., `Fairy/` → `fairy/`)
   - Added 7zip `-ssc-` flag and recursive path variant generation for case-insensitive matching

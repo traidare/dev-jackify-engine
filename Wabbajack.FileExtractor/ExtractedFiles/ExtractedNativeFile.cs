@@ -23,45 +23,16 @@ public class ExtractedNativeFile : NativeFileStreamFactory, IExtractedFile
 
     public async ValueTask Move(AbsolutePath newPath, CancellationToken token)
     {
-        try
-        {
-            // Normal path - try to move/copy directly
-            newPath.Parent.CreateDirectory();
-            if (CanMove)
-                await _file.MoveToAsync(newPath, true, token);
-            else
-                await _file.CopyToAsync(newPath, token);
-        }
-        catch (DirectoryNotFoundException ex)
-        {
-            // Case sensitivity issue: directive says "scripts" but "Scripts" exists
-            // Find which case variant actually exists and use that
-            Console.WriteLine($"[CASE_FIX] Caught DirectoryNotFoundException for {newPath}");
-            Console.WriteLine($"[CASE_FIX] Exception: {ex.Message}");
+        // Proactively normalize path to match existing directory case on Linux
+        // Fixes: directive says "scripts" but "Scripts" exists -> use "Scripts"
+        // This must happen BEFORE CreateDirectory() to avoid creating duplicate directories
+        var normalizedPath = FindExistingCaseVariant(newPath) ?? newPath;
 
-            var normalizedPath = FindExistingCaseVariant(newPath);
-            if (normalizedPath.HasValue)
-            {
-                Console.WriteLine($"[CASE_FIX] Found normalized path: {normalizedPath.Value}");
-                normalizedPath.Value.Parent.CreateDirectory();
-                if (CanMove)
-                    await _file.MoveToAsync(normalizedPath.Value, true, token);
-                else
-                    await _file.CopyToAsync(normalizedPath.Value, token);
-            }
-            else
-            {
-                Console.WriteLine($"[CASE_FIX] No case variant found - re-throwing");
-                // No case variant found - this is a genuine error
-                throw;
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[CASE_FIX] Caught unexpected exception type: {ex.GetType().Name}");
-            Console.WriteLine($"[CASE_FIX] Message: {ex.Message}");
-            throw;
-        }
+        normalizedPath.Parent.CreateDirectory();
+        if (CanMove)
+            await _file.MoveToAsync(normalizedPath, true, token);
+        else
+            await _file.CopyToAsync(normalizedPath, token);
     }
 
     /// <summary>

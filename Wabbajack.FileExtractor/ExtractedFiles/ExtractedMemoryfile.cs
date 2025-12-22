@@ -32,32 +32,14 @@ public class ExtractedMemoryFile : IExtractedFile
     {
         await using var stream = await _factory.GetStream();
 
-        try
-        {
-            // Normal path - try to write directly
-            newPath.Parent.CreateDirectory();
-            await newPath.WriteAllAsync(stream, token);
-            _disposed = true;
-        }
-        catch (DirectoryNotFoundException)
-        {
-            // Case sensitivity issue: directive says "scripts" but "Scripts" exists
-            // Find which case variant actually exists and use that
-            stream.Position = 0; // Reset stream for retry
+        // Proactively normalize path to match existing directory case on Linux
+        // Fixes: directive says "scripts" but "Scripts" exists -> use "Scripts"
+        // This must happen BEFORE CreateDirectory() to avoid creating duplicate directories
+        var normalizedPath = FindExistingCaseVariant(newPath) ?? newPath;
 
-            var normalizedPath = FindExistingCaseVariant(newPath);
-            if (normalizedPath.HasValue)
-            {
-                normalizedPath.Value.Parent.CreateDirectory();
-                await normalizedPath.Value.WriteAllAsync(stream, token);
-                _disposed = true;
-            }
-            else
-            {
-                // No case variant found - this is a genuine error
-                throw;
-            }
-        }
+        normalizedPath.Parent.CreateDirectory();
+        await normalizedPath.WriteAllAsync(stream, token);
+        _disposed = true;
     }
 
     /// <summary>
