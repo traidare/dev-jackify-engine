@@ -10,6 +10,10 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
   - File paths, hashes, and context are extracted and displayed prominently
   - Stack traces and technical details (exception type, original message) are hidden by default, shown only with `--debug` flag
   - Makes errors much more understandable for non-technical users
+* **Destination Case-Sensitivity Hotfix**: Prevent installation failures when `mods/` subdirectories differ only by case
+  - When installing files from archives, `AInstaller` now reuses an existing directory whose name matches case-insensitively (e.g. `translations/` vs `Translations/`, `Scripts/` vs `scripts/`)
+  - Only applies when the original destination parent directory does not exist; successful installs are unchanged
+  - Fixes update failures for large lists like Lorerim without requiring a full reinstall or re-download
 
 ### Critical Bug Fixes
 * **Game File Download Case Sensitivity**: Fixed "Unable to download" errors for game files (Fallout4.exe, Data files, etc.) when modlist uses different casing than actual files

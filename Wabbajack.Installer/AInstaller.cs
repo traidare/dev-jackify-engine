@@ -535,6 +535,7 @@ public abstract class AInstaller<T>
                 // No need to print it here for every file - that causes console spam
 
                 var destPath = file.To.RelativeTo(_configuration.Install);
+                var destPathForHash = destPath;
 
                 // Case sensitivity fix: BSA temp files may have inconsistent case in directives
                 // Normalize to use existing directory case to prevent duplicate directories
@@ -580,7 +581,22 @@ public abstract class AInstaller<T>
                     case FromArchive _:
                         if (grouped[vf].Count() == 1)
                         {
-                            var hash = await sf.MoveHashedAsync(destPath, token);
+                            var targetPath = destPath;
+
+                            // Quick, low-risk case-sensitivity fix for destination paths:
+                            // If the destination directory doesn't exist, try to find an existing
+                            // directory with the same name but different casing and use that instead.
+                            if (!targetPath.Parent.DirectoryExists())
+                            {
+                                var normalized = NormalizePathToCaseInsensitive(targetPath);
+                                if (normalized.HasValue && normalized.Value.Parent.DirectoryExists())
+                                {
+                                    targetPath = normalized.Value;
+                                }
+                            }
+
+                            var hash = await sf.MoveHashedAsync(targetPath, token);
+                            destPathForHash = targetPath;
                             ThrowOnNonMatchingHash(file, hash);
                         }
                         else
@@ -618,7 +634,7 @@ public abstract class AInstaller<T>
                     ConsoleOutput.PrintFileProgress("Completed", filename, percent, speed, counterCompleted, counterTotal);
                 }
                 
-                await FileHashCache.FileHashWriteCache(destPath, file.Hash);
+                await FileHashCache.FileHashWriteCache(destPathForHash, file.Hash);
 
                 await job.Report((int) directive.VF.Size, token);
             }
