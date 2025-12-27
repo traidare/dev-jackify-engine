@@ -636,13 +636,13 @@ public class FileExtractor
     private async Task<int> RunProton7zExtraction(string archivePath, string outputPath)
     {
         // Use dynamic Proton detection like texconv.exe does
-        var protonDetector = new ProtonDetector(Microsoft.Extensions.Logging.Abstractions.NullLogger<ProtonDetector>.Instance);
+        var protonDetector = new ProtonDetector(Microsoft.Extensions.Logging.Abstractions.NullLogger<Wabbajack.Common.ProtonDetector>.Instance);
 
         var protonPath = await protonDetector.GetProtonWrapperPathAsync();
         
         if (protonPath == null)
         {
-            _logger.LogError("No Proton installation found, cannot run 7z.exe via Proton");
+            _logger.LogError("No Proton installation found, cannot run 7z.exe via Proton. Please ensure Steam is installed with Proton (Experimental, 10.0, or 9.0)");
             return -1;
         }
         

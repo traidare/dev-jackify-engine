@@ -49,27 +49,53 @@ public class ProtonDetector
 
         var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        // 1) Config: ~/.config/jackify/config.json { "proton_path": "/path/to/proton_dir" }
+        // 1) Config: ~/.config/jackify/config.json { "proton_path": "/path/to/proton_dir" or "/path/to/proton_dir/proton" }
         try
         {
             var configPath = Path.Combine(homeDir, ".config", "jackify", "config.json");
             if (File.Exists(configPath))
             {
+                _logger.LogDebug("Found Jackify config file at {ConfigPath}", configPath);
                 using var fs = File.OpenRead(configPath);
                 using var doc = JsonDocument.Parse(fs);
-                if (doc.RootElement.TryGetProperty("proton_path", out var pp))
+                var hasProtonPath = doc.RootElement.TryGetProperty("proton_path", out var pp);
+                if (hasProtonPath)
                 {
-                    var configuredDir = pp.GetString();
-                    if (!string.IsNullOrWhiteSpace(configuredDir))
+                    var configuredPath = pp.GetString();
+                    _logger.LogDebug("Found proton_path in config: {Path}", configuredPath);
+                    if (!string.IsNullOrWhiteSpace(configuredPath))
                     {
-                        var configuredWrapper = Path.Combine(configuredDir!, "proton");
+                        // Expand ~ to home directory if present
+                        var expandedPath = configuredPath!;
+                        if (expandedPath.StartsWith("~/") || expandedPath == "~")
+                        {
+                            expandedPath = expandedPath.Replace("~", homeDir);
+                        }
+                        
+                        // Handle both formats:
+                        // 1. Directory path: "/path/to/Proton - Experimental" -> append "/proton"
+                        // 2. Full path: "/path/to/Proton - Experimental/proton" -> use directly
+                        var configuredWrapper = expandedPath.TrimEnd('/', '\\');
+                        
+                        // If it doesn't end with "proton", assume it's a directory and append "/proton"
+                        if (!configuredWrapper.EndsWith("proton", StringComparison.OrdinalIgnoreCase))
+                        {
+                            configuredWrapper = Path.Combine(configuredWrapper, "proton");
+                        }
+                        
+                        // Convert to absolute path if relative
+                        if (!Path.IsPathRooted(configuredWrapper))
+                        {
+                            configuredWrapper = Path.GetFullPath(configuredWrapper);
+                        }
+                        
                         if (File.Exists(configuredWrapper))
                         {
-                            _logger.LogDebug("Using Proton wrapper from config: {Path}", configuredWrapper);
-                            _logger.LogDebug("Proton source: config -> {Path}", configuredWrapper);
+                            _logger.LogInformation("Using Proton wrapper from config: {Path}", configuredWrapper);
                             return configuredWrapper;
                         }
-                        _logger.LogDebug("Configured Proton wrapper not found at {Path}", configuredWrapper);
+                        _logger.LogWarning("Configured Proton wrapper not found at {Path} (from config value: {ConfigValue})", 
+                            configuredWrapper, configuredPath);
                     }
                 }
             }
@@ -108,32 +134,67 @@ public class ProtonDetector
         }
 
         // 3) Valve Proton fallback order: Experimental -> 10.0 -> 9.0
-        var steamProtonPaths = new[]
+        // Check both standard Steam locations AND any additional library folders
+        var steamRoots = new List<string>();
+        
+        // Standard Steam installation paths
+        var standardSteamPaths = new[]
         {
-            Path.Combine(homeDir, ".local", "share", "Steam", "steamapps", "common", "Proton - Experimental", "proton"),
-            Path.Combine(homeDir, ".local", "share", "Steam", "steamapps", "common", "Proton 10.0", "proton"),
-            Path.Combine(homeDir, ".local", "share", "Steam", "steamapps", "common", "Proton 9.0", "proton"),
-            Path.Combine(homeDir, ".steam", "steam", "steamapps", "common", "Proton - Experimental", "proton"),
-            Path.Combine(homeDir, ".steam", "steam", "steamapps", "common", "Proton 10.0", "proton"),
-            Path.Combine(homeDir, ".steam", "steam", "steamapps", "common", "Proton 9.0", "proton")
+            Path.Combine(homeDir, ".local", "share", "Steam"),
+            Path.Combine(homeDir, ".steam", "steam")
         };
-
-        foreach (var protonPath in steamProtonPaths)
+        
+        foreach (var steamPath in standardSteamPaths)
         {
-            if (File.Exists(protonPath))
+            if (Directory.Exists(steamPath))
             {
-                _logger.LogDebug("Found Steam Proton wrapper at {Path}", protonPath);
-                try
+                steamRoots.Add(steamPath);
+                
+                // Check for additional library folders (Steam can have multiple library locations)
+                var libraryFoldersPath = Path.Combine(steamPath, "steamapps", "libraryfolders.vdf");
+                if (File.Exists(libraryFoldersPath))
                 {
-                    var versionName = new DirectoryInfo(Path.GetDirectoryName(protonPath)!).Name;
-                    _logger.LogDebug("Proton source: Valve {Version} -> {Path}", versionName, protonPath);
+                    try
+                    {
+                        var libraryPaths = ParseSteamLibraryFolders(libraryFoldersPath);
+                        steamRoots.AddRange(libraryPaths);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Error parsing libraryfolders.vdf, using standard paths only");
+                    }
                 }
-                catch { /* best-effort */ }
-                return protonPath;
+            }
+        }
+        
+        // Check all found Steam roots for Proton
+        var protonVersions = new[] { "Proton - Experimental", "Proton 10.0", "Proton 9.0" };
+        foreach (var steamRoot in steamRoots)
+        {
+            var commonPath = Path.Combine(steamRoot, "steamapps", "common");
+            if (!Directory.Exists(commonPath)) continue;
+            
+            foreach (var version in protonVersions)
+            {
+                var protonPath = Path.Combine(commonPath, version, "proton");
+                if (File.Exists(protonPath))
+                {
+                    _logger.LogDebug("Found Steam Proton wrapper at {Path}", protonPath);
+                    try
+                    {
+                        _logger.LogDebug("Proton source: Valve {Version} -> {Path}", version, protonPath);
+                    }
+                    catch { /* best-effort */ }
+                    return protonPath;
+                }
             }
         }
 
-        _logger.LogError("No Proton wrapper found - Proton is required for jackify-engine");
+        _logger.LogInformation("Proton detection: No Proton wrapper found after checking all standard locations");
+        _logger.LogInformation("Proton detection: Checked config file, GE-Proton10, and Valve Proton (Experimental, 10.0, 9.0)");
+        _logger.LogInformation("Proton detection: Steam paths checked: {SteamPath1}, {SteamPath2}",
+            Path.Combine(homeDir, ".local", "share", "Steam"),
+            Path.Combine(homeDir, ".steam", "steam"));
         return null;
     }
 
@@ -535,6 +596,51 @@ public class ProtonDetector
         {
             _logger.LogDebug($"Failed to clean up temporary Wine prefix: {prefixPath} - {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Parses Steam libraryfolders.vdf to find additional Steam library locations
+    /// </summary>
+    private List<string> ParseSteamLibraryFolders(string vdfPath)
+    {
+        var libraryPaths = new List<string>();
+        try
+        {
+            var lines = File.ReadAllLines(vdfPath);
+            foreach (var line in lines)
+            {
+                // Look for lines like: "path"		"/mnt/games/SteamLibrary"
+                if (line.Contains("\"path\""))
+                {
+                    // Extract path value - handle both tab and space separated
+                    var parts = line.Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var part in parts)
+                    {
+                        var trimmed = part.Trim('"', ' ', '\t');
+                        if (trimmed.StartsWith("/") || trimmed.StartsWith("~/"))
+                        {
+                            // Expand ~ to home directory
+                            if (trimmed.StartsWith("~/"))
+                            {
+                                var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                                trimmed = Path.Combine(homeDir, trimmed.Substring(2));
+                            }
+                            
+                            if (Directory.Exists(trimmed))
+                            {
+                                libraryPaths.Add(trimmed);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Error parsing libraryfolders.vdf at {Path}", vdfPath);
+        }
+        
+        return libraryPaths;
     }
 
     /// <summary>

@@ -2,6 +2,18 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.4.4 - 2025-01-XX
+### Critical Bug Fixes
+* **Nexus OAuth Validation**: Fixed infinite recursion when OAuth token validation fails with Unauthorized/Forbidden
+  - Added error handling to cache validation failures and prevent infinite retry loops
+  - Prevents engine from crashing when tokens are invalid or expired
+
+### Improvements
+* **Proton Detection Improvements**: Enhanced Proton detection for multi-library Steam setups
+  - Now parses `libraryfolders.vdf` to find Proton in additional Steam library folders
+  - Improved config path handling (supports both directory and full path formats, `~` expansion)
+  - Better error messages when Proton is not found
+
 ## Version 0.4.3 - 2025-12-21
 ### Improvements
 * **Improved Error Logging**: Exception messages now display user-friendly error descriptions instead of technical stack traces
