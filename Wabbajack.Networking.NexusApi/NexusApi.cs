@@ -63,16 +63,25 @@ public class NexusApi
         }
         else if(_lastValidated < DateTime.Now - TimeSpan.FromMinutes(5)) // We don't want to spam the validate endpoint when starting a modlist download
         {
-            var msg = await GenerateMessage(HttpMethod.Get, Endpoints.OAuthValidate);
-            var (data, header) = await Send<OAuthUserInfo>(msg, token);
-            var validateInfo = new ValidateInfo
+            try
             {
-                IsPremium = data.MembershipRoles.Contains("premium"),
-                Name = data.Name,
-            };
-            _lastValidatedInfo = (validateInfo, header);
-
-            _lastValidated = DateTime.Now;
+                var msg = await GenerateMessage(HttpMethod.Get, Endpoints.OAuthValidate);
+                var (data, header) = await Send<OAuthUserInfo>(msg, token);
+                var validateInfo = new ValidateInfo
+                {
+                    IsPremium = (data.MembershipRoles ?? Array.Empty<string>()).Contains("premium"),
+                    Name = data.Name,
+                };
+                _lastValidatedInfo = (validateInfo, header);
+                _lastValidated = DateTime.Now;
+            }
+            catch (HttpException ex) when (ex.Code == (int)HttpStatusCode.Unauthorized || ex.Code == (int)HttpStatusCode.Forbidden)
+            {
+                // Fix: Cache the failure to prevent infinite retry loop when token is invalid/expired
+                _lastValidatedInfo = (new ValidateInfo { IsPremium = false, Name = "" }, new ResponseMetadata());
+                _lastValidated = DateTime.Now - TimeSpan.FromMinutes(4); // Expires in 1 minute (5 min cache - 4 min = 1 min)
+                throw; // Re-throw to let caller know validation failed
+            }
         }
 
         return _lastValidatedInfo;
@@ -124,15 +133,48 @@ public class NexusApi
     {
         using var job = await _limiter.Begin($"API call to the Nexus {msg.RequestUri!.PathAndQuery}", 0, token);
 
+        _logger.LogDebug("Nexus API Request: {Method} {Uri}", msg.Method, msg.RequestUri);
+        
         using var result = await _client.SendAsync(msg, token);
+        
+        _logger.LogDebug("Nexus API Response: {StatusCode} {ReasonPhrase}", result.StatusCode, result.ReasonPhrase);
+        
         if (!result.IsSuccessStatusCode)
+        {
+            // Enhanced logging for authentication failures
+            if (result.StatusCode == HttpStatusCode.Unauthorized || result.StatusCode == HttpStatusCode.Forbidden)
+            {
+                // Check token source without calling GetAuthInfo (to avoid recursion)
+                var hasStoredToken = AuthInfo.HaveToken();
+                var hasEnvToken = Environment.GetEnvironmentVariable("NEXUS_API_KEY") != null;
+                var tokenSource = hasStoredToken ? "encrypted file (can refresh)" : 
+                    (hasEnvToken ? "NEXUS_API_KEY environment variable (cannot refresh)" : "none");
+                
+                var errorBody = await result.Content.ReadAsStringAsync(token);
+                _logger.LogError("Nexus API authentication failed: {StatusCode} {ReasonPhrase}. " +
+                    "Token source: {TokenSource}. " +
+                    "Response body: {ErrorBody}. " +
+                    "If using OAuth token from environment variable, the token may have expired. " +
+                    "Environment variable tokens cannot be refreshed automatically. " +
+                    "For long-running installations, Jackify should refresh tokens before passing them, " +
+                    "or store tokens in encrypted file for automatic refresh capability.",
+                    result.StatusCode, result.ReasonPhrase, tokenSource, errorBody);
+            }
+            else
+            {
+                var errorBody = await result.Content.ReadAsStringAsync(token);
+                _logger.LogError("Nexus API call failed: {StatusCode} {ReasonPhrase}, Response body: {ErrorBody}",
+                    result.StatusCode, result.ReasonPhrase, errorBody);
+            }
             throw new HttpException(result);
+        }
 
         var headers = ParseHeaders(result);
         job.Size = result.Content.Headers.ContentLength ?? 0;
         await job.Report((int) (result.Content.Headers.ContentLength ?? 0), token);
 
         var body = await result.Content.ReadAsByteArrayAsync(token);
+        
         return (JsonSerializer.Deserialize<T>(body, _jsonOptions)!, headers);
     }
 
@@ -257,6 +299,18 @@ public class NexusApi
                 // Detect OAuth token: JWT tokens start with "eyJ" (Base64 encoded JSON header)
                 // If it's an OAuth token, use Bearer authentication; otherwise use API key
                 var isOAuthToken = apiKey.StartsWith("eyJ", StringComparison.Ordinal);
+                
+                if (isOAuthToken)
+                {
+                    _logger.LogDebug("Detected OAuth token from NEXUS_API_KEY environment variable (length: {Length}, starts with: {Prefix})",
+                        apiKey.Length, apiKey.Substring(0, Math.Min(20, apiKey.Length)));
+                }
+                else
+                {
+                    _logger.LogDebug("Detected API key from NEXUS_API_KEY environment variable (length: {Length})",
+                        apiKey.Length);
+                }
+                
                 return (IsApiKey: !isOAuthToken, apiKey);
             }
         }
@@ -278,13 +332,27 @@ public class NexusApi
 
         var response = await _client.PostAsync($"https://users.nexusmods.com/oauth/token", content, cancel);
 
-        if (!response.IsSuccessStatusCode) 
-            _logger.LogError("Nexus OAuth Token refresh failed: {ResponseReasonPhrase}", response.ReasonPhrase);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(cancel);
+            _logger.LogError("Nexus OAuth Token refresh failed: Status {StatusCode}, Reason: {ResponseReasonPhrase}, Body: {ErrorBody}",
+                response.StatusCode, response.ReasonPhrase, errorBody);
+            // Don't continue with null token - this would break authentication
+            throw new HttpException(response);
+        }
         
         var responseString = await response.Content.ReadAsStringAsync(cancel);
         var newJwt = JsonSerializer.Deserialize<JwtTokenReply>(responseString);
         if (newJwt != null) 
+        {
             newJwt.ReceivedAt = DateTime.UtcNow.ToFileTimeUtc();
+            _logger.LogDebug("OAuth token refreshed successfully, expires in {ExpiresIn} seconds", newJwt.ExpiresIn);
+        }
+        else
+        {
+            _logger.LogError("OAuth token refresh returned null JWT. Response body: {ResponseBody}", responseString);
+            throw new Exception("OAuth token refresh returned null JWT");
+        }
         
         state.OAuth = newJwt;
         await AuthInfo.SetToken(state);
