@@ -312,16 +312,18 @@ public class FileExtractor
             if (onlyFiles != null)
             {
                 // On Linux with -ssc- flag, 7zip does case-insensitive matching
-                // No need for AllVariants() exponential explosion
-                // On Windows, still need path separator variants but case is already insensitive
+                // But we still need path separator variants (backslash vs forward slash)
+                // Match upstream Wabbajack's AllVariants approach
                 IEnumerable<string> GetPatterns(string input)
                 {
                     var forward = input.Replace("\\", "/");
 
-                    // Just need forward slash variants (/, \, plain) - 7zip handles case via -ssc-
-                    yield return $"\"{forward}\"";
-                    yield return $"\"\\{forward}\"";
-                    yield return $"\"/{forward}\"";
+                    // Generate both original (backslash) and forward-slash variants
+                    // 7zip pattern matching is literal, so we need exact separator matches
+                    yield return $"\"{input}\"";        // Original with backslash (matches archives created on Windows)
+                    yield return $"\"\\{input}\"";      // Leading backslash + original
+                    yield return $"\"{forward}\"";      // Forward slash variant (matches ZIP spec)
+                    yield return $"\"/{forward}\"";     // Leading forward slash + forward variant
                 }
 
                 tmpFile = _manager.CreateFile();
@@ -609,6 +611,13 @@ public class FileExtractor
             }
             
             _logger.LogDebug("Proton 7z.exe extraction completed successfully");
+
+            // Post-process: move files with backslashes in their names to correct subdirectories
+            // This must happen BEFORE processing files to avoid path mismatches
+            await MoveFilesWithBackslashesToSubdirs(tempFolder.Path.ToString());
+
+            // Add small delay to ensure file system sync after post-processing
+            await Task.Delay(100, token);
 
             // Process extracted files - same as regular extraction
             var results = new Dictionary<RelativePath, T>();
@@ -990,17 +999,17 @@ public class FileExtractor
             return;
         }
         
-        var files = Directory.GetFiles(extractionDir, "*", SearchOption.AllDirectories);
-        var backslashFiles = new List<string>();
+        var directory = new DirectoryInfo(extractionDir);
+        var files = directory.GetFiles("*", SearchOption.AllDirectories);
+        var backslashFiles = new List<FileInfo>();
         
         // Find all files with backslashes in their names
         foreach (var file in files)
         {
-            var fileName = Path.GetFileName(file);
-            if (fileName.Contains("\\"))
+            if (file.Name.Contains("\\"))
             {
                 backslashFiles.Add(file);
-                _logger.LogDebug("[POST-PROCESS] Found file with backslashes in name: {FileName}", fileName);
+                _logger.LogDebug("[POST-PROCESS] Found file with backslashes in name: {FileName}", file.Name);
             }
         }
         
@@ -1014,7 +1023,7 @@ public class FileExtractor
         
         foreach (var file in backslashFiles)
         {
-            var fileName = Path.GetFileName(file);
+            var fileName = file.Name;
             var parts = fileName.Split(new[] {'\\'}, StringSplitOptions.RemoveEmptyEntries);
             
             if (parts.Length < 2)
@@ -1026,7 +1035,7 @@ public class FileExtractor
             // Create the proper directory structure
             var fileNameOnly = parts.Last();
             var dirParts = parts.Take(parts.Length - 1).ToArray();
-            var newDir = Path.Combine(Path.GetDirectoryName(file)!, Path.Combine(dirParts));
+            var newDir = Path.Combine(file.DirectoryName!, Path.Combine(dirParts));
             var newPath = Path.Combine(newDir, fileNameOnly);
             
             try
@@ -1040,12 +1049,12 @@ public class FileExtractor
                     _logger.LogDebug("[POST-PROCESS] Target file already exists, overwriting: {NewPath}", newPath);
                 }
                 
-                File.Move(file, newPath, overwrite: true);
-                _logger.LogDebug("[POST-PROCESS] Moved {OldFile} -> {NewPath}", file, newPath);
+                File.Move(file.FullName, newPath, overwrite: true);
+                _logger.LogDebug("[POST-PROCESS] Moved {OldFile} -> {NewPath}", file.FullName, newPath);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[POST-PROCESS] Failed to move {File} to {NewPath}", file, newPath);
+                _logger.LogError(ex, "[POST-PROCESS] Failed to move {File} to {NewPath}", file.FullName, newPath);
                 // Don't rethrow - continue processing other files
             }
         }

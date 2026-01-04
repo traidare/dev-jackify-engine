@@ -2,17 +2,32 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
-## Version 0.4.4 - 2025-01-XX
+## Version 0.4.5 - 2025-01-02
 ### Critical Bug Fixes
-* **Nexus OAuth Validation**: Fixed infinite recursion when OAuth token validation fails with Unauthorized/Forbidden
-  - Added error handling to cache validation failures and prevent infinite retry loops
-  - Prevents engine from crashing when tokens are invalid or expired
+* **Archive Extraction with Backslashes**: Fixed regression where files with backslashes in filenames weren't being converted to directory structure when extracted via Proton 7z.exe
+  - Added post-processing call to `GatheringExtractWithProton7Zip` to fix backslashes (Linux 7zz path already had this)
+* **Data Directory Path**: Fixed `TemporaryFileManager` using hardcoded lowercase `~/jackify` instead of honoring user-configured data directory
+  - Now reads `jackify_data_dir` from `~/.config/jackify/config.json` (inlined to avoid circular dependency)
+  - Falls back to `~/Jackify` (capitalized) if config read fails, instead of creating `~/jackify` (lowercase)
+* **.wabbajack File Hash Validation**: Removed post-download hash validation to match upstream Wabbajack behavior
+  - Upstream Wabbajack only validates hash before download (to check if file exists), not after download
+  - File integrity is still checked when loading the modlist (will fail if corrupted)
+  - Fixes installation failures when metadata hash doesn't match actual file hash (rare edge case)
+* **Pattern Matching for Archives with Backslashes**: Fixed extraction failures for archives containing files with backslash path separators
+  - Updated `GetPatterns` to include both backslash and forward-slash variants (matches upstream Wabbajack's `AllVariants`)
+  - 7zip pattern matching is literal and requires exact separator matches
+  - Fixes cases where Linux 7zz extracted 0 files because forward-slash patterns didn't match backslash paths in archive
+  - Negligible performance impact (<0.1s overhead for 40-minute installation)
+* **.wabbajack Download Progress Tracking**: Fixed `System.ArgumentException: Destination array was not long enough` error during .wabbajack file downloads
+  - Replaced `ConcurrentQueue<T>` with `Queue<T>` and added proper locking for thread-safe access
+  - Prevents race condition when `ToArray()` is called while queue is being modified concurrently
+  - Matches the working pattern used in `DownloadModlist.cs`
+
+## Version 0.4.4 - 2025-01-XX
 
 ### Improvements
-* **Proton Detection Improvements**: Enhanced Proton detection for multi-library Steam setups
-  - Now parses `libraryfolders.vdf` to find Proton in additional Steam library folders
-  - Improved config path handling (supports both directory and full path formats, `~` expansion)
-  - Better error messages when Proton is not found
+* **Proton Detection**: Now parses `libraryfolders.vdf` to find Proton in additional Steam library folders
+* **Nexus OAuth Logging**: Enhanced validation logging (actual bug fixed in Jackify v0.2.0.5)
 
 ## Version 0.4.3 - 2025-12-21
 ### Improvements

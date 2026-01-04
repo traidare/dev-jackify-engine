@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using shortid;
@@ -15,8 +17,52 @@ public class TemporaryFileManager : IDisposable, IAsyncDisposable
         useSpecialCharacters:false,
         length: 8);
 
-    public TemporaryFileManager() : this(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile).ToAbsolutePath().Combine("jackify").Combine("temp"))
+    public TemporaryFileManager() : this(GetJackifyDataDirectory().Combine("temp"))
     {
+    }
+    
+    /// <summary>
+    /// Gets the Jackify data directory from ~/.config/jackify/config.json, falling back to ~/Jackify.
+    /// Inlined here to avoid circular dependency with Wabbajack.Common.
+    /// </summary>
+    private static AbsolutePath GetJackifyDataDirectory()
+    {
+        try
+        {
+            var home = Environment.GetEnvironmentVariable("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            AbsolutePath configDir;
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                configDir = (home + "/.config/jackify").ToAbsolutePath();
+            }
+            else
+            {
+                // Non-Linux fallback
+                configDir = KnownFolders.WabbajackAppLocal.Combine("jackify");
+            }
+
+            var configPath = configDir.Combine("config.json");
+            if (configPath.FileExists())
+            {
+                var json = File.ReadAllText(configPath.ToString());
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("jackify_data_dir", out var dataDirProp) && dataDirProp.ValueKind == JsonValueKind.String)
+                {
+                    var dataDir = dataDirProp.GetString();
+                    if (!string.IsNullOrWhiteSpace(dataDir))
+                    {
+                        return dataDir!.ToAbsolutePath();
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Ignore and fall through to default
+        }
+
+        // Fallback to ~/Jackify (capitalized, not lowercase)
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile).ToAbsolutePath().Combine("Jackify");
     }
 
     public TemporaryFileManager(AbsolutePath basePath, bool deleteOnDispose = true)

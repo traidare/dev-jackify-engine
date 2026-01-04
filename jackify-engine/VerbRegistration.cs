@@ -69,5 +69,9 @@ public class VerbRegistration
         services.AddSingleton<ListArchives>();
         CommandLineBuilder.RegisterCommand<DownloadModlistImages>(DownloadModlistImages.Definition, c => ((DownloadModlistImages)c).Run);
         services.AddSingleton<DownloadModlistImages>();
+        CommandLineBuilder.RegisterCommand<CheckTokenStatus>(CheckTokenStatus.Definition, c => ((CheckTokenStatus)c).Run);
+        services.AddSingleton<CheckTokenStatus>();
+        CommandLineBuilder.RegisterCommand<TestExtract>(TestExtract.Definition, c => ((TestExtract)c).Run);
+        services.AddSingleton<TestExtract>();
     }
 }

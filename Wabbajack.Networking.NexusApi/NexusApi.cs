@@ -17,6 +17,7 @@ using Wabbajack.DTOs.OAuth;
 using Wabbajack.Networking.Http;
 using Wabbajack.Networking.Http.Interfaces;
 using Wabbajack.Networking.NexusApi.DTOs;
+using Wabbajack.Paths;
 using Wabbajack.Paths.IO;
 using Wabbajack.RateLimiter;
 using Wabbajack.Server.DTOs;
@@ -35,6 +36,8 @@ public class NexusApi
     private (ValidateInfo info, ResponseMetadata header) _lastValidatedInfo; 
     private readonly AsyncLock _authLock = new();
     private readonly AsyncLock _authValidationLock = new();
+    // In-memory OAuth state for NEXUS_OAUTH_INFO environment variable tokens (cannot be persisted back to env var)
+    private NexusOAuthState? _envVarOAuthState;
 
     public NexusApi(ITokenProvider<NexusOAuthState> authInfo, ILogger<NexusApi> logger, HttpClient client,
         IResource<HttpClient> limiter, ApplicationInfo appInfo, JsonSerializerOptions jsonOptions)
@@ -278,44 +281,159 @@ public class NexusApi
     private async ValueTask<(bool IsApiKey, string code)> GetAuthInfo()
     {
         using var _ = await _authLock.WaitAsync();
-        if (AuthInfo.HaveToken())
+        
+        // Priority: encrypted file > NEXUS_OAUTH_INFO env var > NEXUS_API_KEY env var
+        // Within each source, it's EITHER OAuth OR API key (user's explicit choice), not both
+        // NOTE: GUI writes encrypted files (~/.config/jackify/nexus-oauth.json) with AES-GCM
+        // Engine does NOT support AES-GCM - GUI should pass OAuth via NEXUS_OAUTH_INFO env var
+        var encryptedFilePath = JackifyConfig.GetDataDirectory().Combine("encrypted", "nexus-oauth-info");
+        var hasTokenFile = encryptedFilePath.FileExists();
+        
+        if (hasTokenFile)
         {
             var info = await AuthInfo.Get();
+            
+            // Encrypted file: EITHER OAuth OR API key (user's choice)
             if (info!.OAuth != null)
             {
-                if (info.OAuth.IsExpired)
-                    info = await RefreshToken(info, CancellationToken.None);
-                return (false, info.OAuth!.AccessToken!);
+                // User chose OAuth - use it with refresh capability
+                // Check expiry with 15-minute buffer (user requirement)
+                if (IsTokenExpiringSoon(info.OAuth, TimeSpan.FromMinutes(15)))
+                {
+                    try
+                    {
+                        var expiresAt = DateTime.FromFileTimeUtc(info.OAuth.ReceivedAt) + TimeSpan.FromSeconds(info.OAuth.ExpiresIn);
+                        var timeUntilExpiry = expiresAt - DateTimeOffset.UtcNow;
+                        var minutesUntilExpiry = (int)timeUntilExpiry.TotalMinutes;
+                        _logger.LogDebug("OAuth token expiring in {Minutes} minutes, triggering refresh...", minutesUntilExpiry);
+                        info = await RefreshToken(info, CancellationToken.None);
+                    }
+                    catch (Exception refreshEx)
+                    {
+                        _logger.LogError(refreshEx, "OAuth token refresh failed: {ErrorMessage}. OAuth authentication will fail.", refreshEx.Message);
+                        throw; // Don't fall back - user chose OAuth, so respect that choice
+                    }
+                }
+                
+                if (info.OAuth?.AccessToken != null)
+                {
+                    // Write token status to file for GUI to read (fire and forget)
+                    Task.Run(async () => await WriteTokenStatusFile(info)).ConfigureAwait(false);
+                    return (false, info.OAuth.AccessToken);
+                }
             }
-            if (!string.IsNullOrWhiteSpace(info.ApiKey))
+            else if (!string.IsNullOrWhiteSpace(info.ApiKey))
             {
+                // User chose API key - use it (no refresh capability)
+                // Write token status to file for GUI to read (fire and forget)
+                Task.Run(async () => await WriteTokenStatusFile(info)).ConfigureAwait(false);
                 return (true, info.ApiKey);
             }
+            // If encrypted file exists but has no valid auth, fall through to check env vars
         }
-        else
+        
+        // Check environment variables: EITHER NEXUS_OAUTH_INFO OR NEXUS_API_KEY (user's choice)
+        // Check NEXUS_OAUTH_INFO first (OAuth with refresh)
+        if (Environment.GetEnvironmentVariable("NEXUS_OAUTH_INFO") is { } oauthInfoJson)
         {
-            if (Environment.GetEnvironmentVariable("NEXUS_API_KEY") is { } apiKey)
+            try
             {
-                // Detect OAuth token: JWT tokens start with "eyJ" (Base64 encoded JSON header)
-                // If it's an OAuth token, use Bearer authentication; otherwise use API key
-                var isOAuthToken = apiKey.StartsWith("eyJ", StringComparison.Ordinal);
-                
-                if (isOAuthToken)
+                // Use in-memory state if available, otherwise parse directly from env var
+                // IMPORTANT: Don't use AuthInfo.Get() here - it would read from encrypted file if it exists
+                // We need to deserialize directly from the NEXUS_OAUTH_INFO environment variable
+                if (_envVarOAuthState == null)
                 {
-                    _logger.LogDebug("Detected OAuth token from NEXUS_API_KEY environment variable (length: {Length}, starts with: {Prefix})",
-                        apiKey.Length, apiKey.Substring(0, Math.Min(20, apiKey.Length)));
-                }
-                else
-                {
-                    _logger.LogDebug("Detected API key from NEXUS_API_KEY environment variable (length: {Length})",
-                        apiKey.Length);
+                    var info = JsonSerializer.Deserialize<NexusOAuthState>(oauthInfoJson, _jsonOptions);
+                    if (info?.OAuth != null)
+                    {
+                        // Ensure ReceivedAt is set if missing (calculate from current time if not present)
+                        if (info.OAuth.ReceivedAt == 0)
+                        {
+                            info.OAuth.ReceivedAt = DateTime.UtcNow.ToFileTimeUtc();
+                            _logger.LogDebug("Set ReceivedAt for OAuth token from NEXUS_OAUTH_INFO environment variable");
+                        }
+                        _envVarOAuthState = info;
+                    }
+                    else
+                    {
+                        _logger.LogError("NEXUS_OAUTH_INFO environment variable does not contain valid OAuth state.");
+                        throw new Exception("NEXUS_OAUTH_INFO environment variable does not contain valid OAuth state");
+                    }
                 }
                 
-                return (IsApiKey: !isOAuthToken, apiKey);
+                // User chose OAuth - use it with refresh capability
+                if (_envVarOAuthState.OAuth != null)
+                {
+                    // Check expiry with 15-minute buffer (user requirement)
+                    if (IsTokenExpiringSoon(_envVarOAuthState.OAuth, TimeSpan.FromMinutes(15)))
+                    {
+                        try
+                        {
+                        var expiresAt = DateTime.FromFileTimeUtc(_envVarOAuthState.OAuth.ReceivedAt) + TimeSpan.FromSeconds(_envVarOAuthState.OAuth.ExpiresIn);
+                        var timeUntilExpiry = expiresAt - DateTimeOffset.UtcNow;
+                        var minutesUntilExpiry = (int)timeUntilExpiry.TotalMinutes;
+                        _logger.LogDebug("OAuth token expiring in {Minutes} minutes, triggering refresh...", minutesUntilExpiry);
+                            _envVarOAuthState = await RefreshTokenForEnvVar(_envVarOAuthState, CancellationToken.None);
+                        }
+                        catch (Exception refreshEx)
+                        {
+                            _logger.LogError(refreshEx, "OAuth token refresh failed: {ErrorMessage}. OAuth authentication will fail.", refreshEx.Message);
+                            throw; // Don't fall back - user chose OAuth, so respect that choice
+                        }
+                    }
+                    
+                    if (_envVarOAuthState.OAuth?.AccessToken != null)
+                    {
+                        // Write token status to file for GUI to read (fire and forget)
+                        Task.Run(async () => await WriteTokenStatusFile(_envVarOAuthState)).ConfigureAwait(false);
+                        return (false, _envVarOAuthState.OAuth.AccessToken);
+                    }
+                }
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to use OAuth token from NEXUS_OAUTH_INFO environment variable.");
+                throw; // Don't fall back - user chose OAuth, so respect that choice
+            }
+        }
+        // Check NEXUS_API_KEY (API key or OAuth token without refresh)
+        else if (Environment.GetEnvironmentVariable("NEXUS_API_KEY") is { } apiKey)
+        {
+            // Detect OAuth token: JWT tokens start with "eyJ" (Base64 encoded JSON header)
+            // If it's an OAuth token, use Bearer authentication; otherwise use API key
+            var isOAuthToken = apiKey.StartsWith("eyJ", StringComparison.Ordinal);
+            
+            if (isOAuthToken)
+            {
+                _logger.LogDebug("Detected OAuth token from NEXUS_API_KEY environment variable (length: {Length}, starts with: {Prefix}). " +
+                    "Note: This token cannot be auto-refreshed. For long-running installs, use NEXUS_OAUTH_INFO instead.",
+                    apiKey.Length, apiKey.Substring(0, Math.Min(20, apiKey.Length)));
+            }
+            else
+            {
+                _logger.LogDebug("Detected API key from NEXUS_API_KEY environment variable (length: {Length})",
+                    apiKey.Length);
+            }
+            
+            // Write token status to file for GUI to read (fire and forget)
+            Task.Run(async () => await WriteTokenStatusFile(null)).ConfigureAwait(false);
+            return (IsApiKey: !isOAuthToken, apiKey);
         }
 
         return default;
+    }
+    
+    /// <summary>
+    /// Check if token is expiring soon (within the specified buffer time)
+    /// </summary>
+    private bool IsTokenExpiringSoon(Wabbajack.DTOs.OAuth.JwtTokenReply oauth, TimeSpan buffer)
+    {
+        if (oauth.ReceivedAt == 0)
+            return true; // If ReceivedAt is not set, consider it expired
+        
+        var expiresAt = DateTime.FromFileTimeUtc(oauth.ReceivedAt) + TimeSpan.FromSeconds(oauth.ExpiresIn);
+        var expiresAtWithBuffer = expiresAt - buffer;
+        return DateTimeOffset.UtcNow >= expiresAtWithBuffer;
     }
     
     private async Task<NexusOAuthState> RefreshToken(NexusOAuthState state, CancellationToken cancel)
@@ -346,16 +464,82 @@ public class NexusApi
         if (newJwt != null) 
         {
             newJwt.ReceivedAt = DateTime.UtcNow.ToFileTimeUtc();
-            _logger.LogDebug("OAuth token refreshed successfully, expires in {ExpiresIn} seconds", newJwt.ExpiresIn);
+            var expiresInHours = newJwt.ExpiresIn / 3600.0;
+            var expiresInMinutes = newJwt.ExpiresIn / 60.0;
+            if (expiresInHours >= 1.0)
+            {
+                _logger.LogDebug("OAuth token refreshed successfully, expires in {Hours:F1} hours", expiresInHours);
+            }
+            else
+            {
+                _logger.LogDebug("OAuth token refreshed successfully, expires in {Minutes:F0} minutes", expiresInMinutes);
+            }
         }
         else
         {
-            _logger.LogError("OAuth token refresh returned null JWT. Response body: {ResponseBody}", responseString);
+            _logger.LogError("OAuth token refresh failed: refresh returned null JWT. Response body: {ResponseBody}", responseString);
             throw new Exception("OAuth token refresh returned null JWT");
         }
         
         state.OAuth = newJwt;
         await AuthInfo.SetToken(state);
+        // Write token status to file so GUI can read it during installs
+        await WriteTokenStatusFile(state);
+        return state;
+    }
+    
+    /// <summary>
+    /// Refresh token for environment variable OAuth state (keeps refreshed token in memory, cannot persist to env var)
+    /// </summary>
+    private async Task<NexusOAuthState> RefreshTokenForEnvVar(NexusOAuthState state, CancellationToken cancel)
+    {
+        _logger.LogInformation("Refreshing OAuth Token from NEXUS_OAUTH_INFO environment variable");
+        var request = new Dictionary<string, string>
+        {
+            { "grant_type", "refresh_token" },
+            { "client_id", "wabbajack" },
+            { "refresh_token", state.OAuth!.RefreshToken },
+        };
+
+        var content = new FormUrlEncodedContent(request);
+
+        var response = await _client.PostAsync($"https://users.nexusmods.com/oauth/token", content, cancel);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(cancel);
+            _logger.LogError("Nexus OAuth Token refresh failed: Status {StatusCode}, Reason: {ResponseReasonPhrase}, Body: {ErrorBody}",
+                response.StatusCode, response.ReasonPhrase, errorBody);
+            throw new HttpException(response);
+        }
+        
+        var responseString = await response.Content.ReadAsStringAsync(cancel);
+        var newJwt = JsonSerializer.Deserialize<JwtTokenReply>(responseString);
+        if (newJwt != null) 
+        {
+            newJwt.ReceivedAt = DateTime.UtcNow.ToFileTimeUtc();
+            var expiresInHours = newJwt.ExpiresIn / 3600.0;
+            var expiresInMinutes = newJwt.ExpiresIn / 60.0;
+            if (expiresInHours >= 1.0)
+            {
+                _logger.LogDebug("OAuth token refreshed successfully, expires in {Hours:F1} hours", expiresInHours);
+            }
+            else
+            {
+                _logger.LogDebug("OAuth token refreshed successfully, expires in {Minutes:F0} minutes", expiresInMinutes);
+            }
+        }
+        else
+        {
+            _logger.LogError("OAuth token refresh failed: refresh returned null JWT. Response body: {ResponseBody}", responseString);
+            throw new Exception("OAuth token refresh returned null JWT");
+        }
+        
+        state.OAuth = newJwt;
+        // Don't call AuthInfo.SetToken() - that would try to save to encrypted file
+        // Instead, keep the refreshed state in memory
+        // Write token status to file so GUI can read it during installs
+        await WriteTokenStatusFile(state);
         return state;
     }
 
@@ -510,4 +694,180 @@ public class NexusApi
         var validated = await ValidateCached(token);
         return validated.info.IsPremium;
     }
+
+    /// <summary>
+    /// Get OAuth token expiry information (if using OAuth, not API key)
+    /// </summary>
+    /// <returns>Token expiry info, or null if using API key or no token available</returns>
+    public async Task<TokenExpiryInfo?> GetTokenExpiryInfo()
+    {
+        try
+        {
+            // Check encrypted file first
+            var encryptedFilePath = JackifyConfig.GetDataDirectory().Combine("encrypted", "nexus-oauth-info");
+            if (encryptedFilePath.FileExists())
+            {
+                var info = await AuthInfo.Get();
+                if (info?.OAuth != null)
+                {
+                    var expiresAt = DateTime.FromFileTimeUtc(info.OAuth.ReceivedAt) + TimeSpan.FromSeconds(info.OAuth.ExpiresIn);
+                    var timeUntilExpiry = expiresAt - DateTimeOffset.UtcNow;
+                    var isExpiringSoon = IsTokenExpiringSoon(info.OAuth, TimeSpan.FromMinutes(15));
+                    
+                    return new TokenExpiryInfo
+                    {
+                        ExpiresAt = expiresAt,
+                        TimeUntilExpiry = timeUntilExpiry,
+                        IsExpiringSoon = isExpiringSoon,
+                        Source = "encrypted_file"
+                    };
+                }
+                else if (!string.IsNullOrWhiteSpace(info?.ApiKey))
+                {
+                    // Encrypted file contains API key, not OAuth
+                    return new TokenExpiryInfo
+                    {
+                        ExpiresAt = null,
+                        TimeUntilExpiry = null,
+                        IsExpiringSoon = null,
+                        Source = "encrypted_file (API key, not OAuth)"
+                    };
+                }
+            }
+            
+            // Check NEXUS_OAUTH_INFO environment variable
+            if (Environment.GetEnvironmentVariable("NEXUS_OAUTH_INFO") is { } oauthInfoJson)
+            {
+                try
+                {
+                    // Use in-memory state if available, otherwise parse from env var
+                    if (_envVarOAuthState == null)
+                    {
+                        var info = JsonSerializer.Deserialize<NexusOAuthState>(oauthInfoJson, _jsonOptions);
+                        if (info?.OAuth != null)
+                        {
+                            if (info.OAuth.ReceivedAt == 0)
+                            {
+                                info.OAuth.ReceivedAt = DateTime.UtcNow.ToFileTimeUtc();
+                            }
+                            _envVarOAuthState = info;
+                        }
+                    }
+                    
+                    if (_envVarOAuthState?.OAuth != null)
+                    {
+                        var expiresAt = DateTime.FromFileTimeUtc(_envVarOAuthState.OAuth.ReceivedAt) + TimeSpan.FromSeconds(_envVarOAuthState.OAuth.ExpiresIn);
+                        var timeUntilExpiry = expiresAt - DateTimeOffset.UtcNow;
+                        var isExpiringSoon = IsTokenExpiringSoon(_envVarOAuthState.OAuth, TimeSpan.FromMinutes(15));
+                        
+                        return new TokenExpiryInfo
+                        {
+                            ExpiresAt = expiresAt,
+                            TimeUntilExpiry = timeUntilExpiry,
+                            IsExpiringSoon = isExpiringSoon,
+                            Source = "NEXUS_OAUTH_INFO"
+                        };
+                    }
+                }
+                catch
+                {
+                    // Failed to parse, continue to check other sources
+                }
+            }
+            
+            // Check NEXUS_API_KEY environment variable
+            if (Environment.GetEnvironmentVariable("NEXUS_API_KEY") is { } apiKey)
+            {
+                if (apiKey.StartsWith("eyJ", StringComparison.Ordinal))
+                {
+                    // OAuth token in NEXUS_API_KEY (no refresh capability, can't determine expiry from JWT without parsing)
+                    return new TokenExpiryInfo
+                    {
+                        ExpiresAt = null,
+                        TimeUntilExpiry = null,
+                        IsExpiringSoon = null,
+                        Source = "NEXUS_API_KEY (OAuth token, expiry unknown - no refresh capability)"
+                    };
+                }
+                else
+                {
+                    // Plain API key
+                    return new TokenExpiryInfo
+                    {
+                        ExpiresAt = null,
+                        TimeUntilExpiry = null,
+                        IsExpiringSoon = null,
+                        Source = "NEXUS_API_KEY (API key, not OAuth)"
+                    };
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // Log error but don't throw - return null to indicate no info available
+            _logger.LogDebug(ex, "Error getting token expiry info");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Writes current token status to a JSON file that GUI can read during installs
+    /// File location: ~/Jackify/token-status.json (or configured data directory)
+    /// </summary>
+    private async Task WriteTokenStatusFile(NexusOAuthState? state = null)
+    {
+        try
+        {
+            var statusFile = JackifyConfig.GetDataDirectory().Combine("token-status.json");
+            var expiryInfo = await GetTokenExpiryInfo();
+            
+            var status = new
+            {
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                token_info = expiryInfo != null ? new
+                {
+                    source = expiryInfo.Source,
+                    expires_at = expiryInfo.ExpiresAt.HasValue ? new DateTimeOffset(expiryInfo.ExpiresAt.Value, TimeSpan.Zero).ToUnixTimeSeconds() : (long?)null,
+                    time_until_expiry_seconds = expiryInfo.TimeUntilExpiry?.TotalSeconds,
+                    is_expiring_soon = expiryInfo.IsExpiringSoon
+                } : null
+            };
+            
+            var json = JsonSerializer.Serialize(status, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(statusFile.ToString(), json);
+        }
+        catch (Exception ex)
+        {
+            // Don't fail if we can't write status file - it's just for GUI convenience
+            _logger.LogDebug(ex, "Failed to write token status file");
+        }
+    }
+}
+
+/// <summary>
+/// Information about OAuth token expiry
+/// </summary>
+public class TokenExpiryInfo
+{
+    /// <summary>
+    /// When the token expires (UTC)
+    /// </summary>
+    public DateTime? ExpiresAt { get; set; }
+    
+    /// <summary>
+    /// Time remaining until expiry
+    /// </summary>
+    public TimeSpan? TimeUntilExpiry { get; set; }
+    
+    /// <summary>
+    /// Whether the token is expiring soon (within 15 minutes)
+    /// </summary>
+    public bool? IsExpiringSoon { get; set; }
+    
+    /// <summary>
+    /// Source of the token (encrypted_file, NEXUS_OAUTH_INFO, etc.)
+    /// </summary>
+    public string Source { get; set; } = string.Empty;
 }

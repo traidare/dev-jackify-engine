@@ -26,7 +26,7 @@ public class EncryptedJsonTokenProvider<T> : ITokenProvider<T>
 
     protected virtual AbsolutePath KeyPath => JackifyConfig.GetDataDirectory().Combine("encrypted", _key);
 
-    public async ValueTask SetToken(T token)
+    public virtual async ValueTask SetToken(T token)
     {
         _logger.LogInformation("Setting token {token}", _key);
         await token.AsEncryptedJsonFile(KeyPath);
@@ -39,7 +39,7 @@ public class EncryptedJsonTokenProvider<T> : ITokenProvider<T>
         return true;
     }
 
-    public async ValueTask<T?> Get()
+    public virtual async ValueTask<T?> Get()
     {
         var path = KeyPath;
         if (path.FileExists())
@@ -57,7 +57,7 @@ public class EncryptedJsonTokenProvider<T> : ITokenProvider<T>
         return _dtos.Deserialize<T>(EnvValue!);
     }
 
-    public bool HaveToken()
+    public virtual bool HaveToken()
     {
         return KeyPath.FileExists() || EnvValue != null;
     }

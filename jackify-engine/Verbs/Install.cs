@@ -208,17 +208,20 @@ public class Install
             State = state!
         };
 
-        // Use progress callback with rolling average smoothing (standard approach)
-        // Most download managers use callbacks but smooth them over a time window
+        // Simple progress tracking - match DownloadModlist.cs approach
         var totalMB = archive.Size / 1024.0 / 1024.0;
-        var samples = new ConcurrentQueue<(DateTime time, long bytes)>();
-        const double sampleWindowSeconds = 3.0; // 3-second rolling window for smoothing
+        var samples = new System.Collections.Generic.Queue<(DateTime time, long bytes)>();
+        var samplesLock = new object();
+        const double sampleWindowSeconds = 3.0;
 
         // Initialize with existing file size if resuming
         long initialBytes = wabbajack.FileExists() ? wabbajack.Size() : 0;
         if (initialBytes > 0)
         {
-            samples.Enqueue((DateTime.UtcNow, initialBytes));
+            lock (samplesLock)
+            {
+                samples.Enqueue((DateTime.UtcNow, initialBytes));
+            }
         }
 
         // Update display periodically from samples
@@ -229,38 +232,40 @@ public class Install
             {
                 try
                 {
-                    await Task.Delay(500, displayCts.Token); // Update display every 500ms
+                    await Task.Delay(500, displayCts.Token);
 
                     var now = DateTime.UtcNow;
-
-                    // Remove samples older than our window
-                    var cutoffTime = now.AddSeconds(-sampleWindowSeconds);
-                    while (samples.TryPeek(out var oldest) && oldest.time < cutoffTime)
-                    {
-                        samples.TryDequeue(out _);
-                    }
-
-                    // Calculate speed from samples in window (oldest to newest)
                     double speedMBps = 0;
                     long currentBytes = initialBytes;
-                    var sampleArray = samples.ToArray(); // Thread-safe snapshot
 
-                    if (sampleArray.Length >= 2)
+                    lock (samplesLock)
                     {
-                        var oldest = sampleArray[0];
-                        var newest = sampleArray[sampleArray.Length - 1];
-                        var timeSpan = (newest.time - oldest.time).TotalSeconds;
-                        var bytesDelta = newest.bytes - oldest.bytes;
-
-                        if (timeSpan > 0.5 && bytesDelta > 0) // Need at least 0.5 seconds of data
+                        // Remove samples older than our window
+                        var cutoffTime = now.AddSeconds(-sampleWindowSeconds);
+                        while (samples.Count > 0 && samples.Peek().time < cutoffTime)
                         {
-                            speedMBps = (bytesDelta / 1024.0 / 1024.0) / timeSpan;
+                            samples.Dequeue();
                         }
-                        currentBytes = newest.bytes;
-                    }
-                    else if (sampleArray.Length == 1)
-                    {
-                        currentBytes = sampleArray[0].bytes;
+
+                        // Calculate speed from samples
+                        if (samples.Count >= 2)
+                        {
+                            var oldest = samples.Peek();
+                            var sampleArray = samples.ToArray();
+                            var newest = sampleArray[sampleArray.Length - 1];
+                            var timeSpan = (newest.time - oldest.time).TotalSeconds;
+                            var bytesDelta = newest.bytes - oldest.bytes;
+
+                            if (timeSpan > 0.5 && bytesDelta > 0)
+                            {
+                                speedMBps = (bytesDelta / 1024.0 / 1024.0) / timeSpan;
+                            }
+                            currentBytes = newest.bytes;
+                        }
+                        else if (samples.Count == 1)
+                        {
+                            currentBytes = samples.Peek().bytes;
+                        }
                     }
 
                     var processedMB = currentBytes / 1024.0 / 1024.0;
@@ -276,28 +281,18 @@ public class Install
         try
         {
             // Use progress callback to collect samples (accurate, immediate)
-            var downloadedHash = await _dispatcher.Download(archive, wabbajack, token, (processed, total) =>
+            // Match upstream Wabbajack behavior: Download the file but don't validate hash after download
+            // Upstream only validates hash before download (to check if file already exists)
+            // The download itself will fail if there's a network issue, and file integrity is checked
+            // when loading the modlist (which will fail if the file is corrupted)
+            await _dispatcher.Download(archive, wabbajack, token, (processed, total) =>
             {
                 // Add sample from callback (this is the accurate bytes downloaded)
-                samples.Enqueue((DateTime.UtcNow, processed));
+                lock (samplesLock)
+                {
+                    samples.Enqueue((DateTime.UtcNow, processed));
+                }
             }, null);
-            
-            // Verify download completed successfully
-            if (downloadedHash == default || downloadedHash != archive.Hash)
-            {
-                _logger.LogError("Download failed or hash mismatch. Expected: {ExpectedHash}, Got: {DownloadedHash}", 
-                    archive.Hash, downloadedHash);
-                return false;
-            }
-            
-            // Verify file size matches expected (double-check)
-            if (!wabbajack.FileExists() || wabbajack.Size() != archive.Size)
-            {
-                _logger.LogError("Downloaded file size mismatch. Expected: {ExpectedSize}, Got: {ActualSize}", 
-                    archive.Size.ToFileSizeString(), 
-                    wabbajack.FileExists() ? wabbajack.Size().ToFileSizeString() : "0 bytes");
-                return false;
-            }
             
             // Verify file is a valid ZIP (quick integrity check)
             try

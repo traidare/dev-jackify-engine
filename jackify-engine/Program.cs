@@ -101,6 +101,18 @@ internal class Program
         
         config.AddRuleForAllLevels(fileTarget);
 
+        // Block Microsoft.Extensions.Http cleanup messages (HttpMessageHandler cleanup cycle spam)
+        // These are debug-level messages from HttpClientFactory that spam the logs
+        // Use dot notation to match the namespace and set level to Off (blocks all messages)
+        // Rules are evaluated in order, so add blocking rules before general rules
+        var httpFileBlockRule = new NLog.Config.LoggingRule("Microsoft.Extensions.Http.*", NLog.LogLevel.Off, NLog.LogLevel.Off, fileTarget);
+        httpFileBlockRule.Final = true; // Stop processing if this rule matches
+        config.LoggingRules.Insert(0, httpFileBlockRule);
+        
+        var httpConsoleBlockRule = new NLog.Config.LoggingRule("Microsoft.Extensions.Http.*", NLog.LogLevel.Off, NLog.LogLevel.Off, consoleTarget);
+        httpConsoleBlockRule.Final = true; // Stop processing if this rule matches
+        config.LoggingRules.Insert(1, httpConsoleBlockRule);
+
         if (debugMode)
         {
             // In debug mode, show all log levels on console
