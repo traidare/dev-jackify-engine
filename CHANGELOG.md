@@ -2,6 +2,12 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.4.6 - 2025-01-XX
+### Critical Bug Fixes
+* **.wabbajack Download Source Array Bounds**: Fixed "Source array was not long enough" exception during .wabbajack file downloads
+  - Added source array bounds checking in `AChunkedBufferingStream.ReadAsync` to prevent underflow when `chunkOffset >= chunkData.Length`
+  - Completes the incomplete fix from v0.4.1 which only addressed destination buffer bounds
+
 ## Version 0.4.5 - 2025-01-02
 ### Critical Bug Fixes
 * **Archive Extraction with Backslashes**: Fixed regression where files with backslashes in filenames weren't being converted to directory structure when extracted via Proton 7z.exe

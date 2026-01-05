@@ -54,9 +54,23 @@ public abstract class AChunkedBufferingStream : Stream
         }
 
         var chunkOffset = (ulong)Position & ~_chunkMask;
-        var availableRead = (ulong)chunkData!.Length - chunkOffset;
+        
+        // Guard against chunkOffset being beyond chunkData.Length (prevents underflow and array bounds error)
+        if (chunkOffset >= (ulong)chunkData!.Length)
+        {
+            // We've read past the end of this chunk, return 0 to indicate end of available data
+            return 0;
+        }
+        
+        var availableRead = (ulong)chunkData.Length - chunkOffset;
         var destinationAvailable = (ulong)(buffer.Length - offset);
         var toRead = Math.Min(Math.Min((ulong)count, availableRead), destinationAvailable);
+
+        // Additional safety check: ensure we don't try to copy more than available in source array
+        if ((uint)chunkOffset + (int)toRead > chunkData.Length)
+        {
+            toRead = (ulong)chunkData.Length - chunkOffset;
+        }
 
         Array.Copy(chunkData, (uint)chunkOffset, buffer, offset, (int)toRead);
         Position += (long)toRead;
@@ -75,8 +89,22 @@ public abstract class AChunkedBufferingStream : Stream
         }
         
         var chunkOffset = (ulong)Position & ~_chunkMask;
-        var availableRead = (ulong)chunkData!.Length - chunkOffset;
+        
+        // Guard against chunkOffset being beyond chunkData.Length (prevents underflow and array bounds error)
+        if (chunkOffset >= (ulong)chunkData!.Length)
+        {
+            // We've read past the end of this chunk, return 0 to indicate end of available data
+            return 0;
+        }
+        
+        var availableRead = (ulong)chunkData.Length - chunkOffset;
         var toRead = Math.Min((ulong)buffer.Length, availableRead);
+
+        // Additional safety check: ensure we don't try to slice more than available
+        if ((int)chunkOffset + (int)toRead > chunkData.Length)
+        {
+            toRead = (ulong)chunkData.Length - chunkOffset;
+        }
 
         var chunkBuff = new Memory<byte>(chunkData).Slice((int)chunkOffset, (int)toRead);
         
