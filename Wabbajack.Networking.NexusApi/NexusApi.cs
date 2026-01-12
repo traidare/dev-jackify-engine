@@ -438,11 +438,13 @@ public class NexusApi
     
     private async Task<NexusOAuthState> RefreshToken(NexusOAuthState state, CancellationToken cancel)
     {
-        _logger.LogInformation("Refreshing OAuth Token");
+        // Read client_id from environment variable, default to "jackify" (Jackify Engine's registered client_id)
+        var clientId = Environment.GetEnvironmentVariable("NEXUS_OAUTH_CLIENT_ID") ?? "jackify";
+        _logger.LogInformation("Refreshing OAuth Token using client_id: {ClientId}", clientId);
         var request = new Dictionary<string, string>
         {
             { "grant_type", "refresh_token" },
-            { "client_id", "wabbajack" },
+            { "client_id", clientId },
             { "refresh_token", state.OAuth!.RefreshToken },
         };
 
@@ -493,11 +495,13 @@ public class NexusApi
     /// </summary>
     private async Task<NexusOAuthState> RefreshTokenForEnvVar(NexusOAuthState state, CancellationToken cancel)
     {
-        _logger.LogInformation("Refreshing OAuth Token from NEXUS_OAUTH_INFO environment variable");
+        // Read client_id from environment variable, default to "jackify" (Jackify Engine's registered client_id)
+        var clientId = Environment.GetEnvironmentVariable("NEXUS_OAUTH_CLIENT_ID") ?? "jackify";
+        _logger.LogInformation("Refreshing OAuth Token from NEXUS_OAUTH_INFO environment variable using client_id: {ClientId}", clientId);
         var request = new Dictionary<string, string>
         {
             { "grant_type", "refresh_token" },
-            { "client_id", "wabbajack" },
+            { "client_id", clientId },
             { "refresh_token", state.OAuth!.RefreshToken },
         };
 

@@ -58,14 +58,7 @@ public class Resource<T> : IResource<T>
                 // Dispose old semaphore
                 oldSemaphore?.Dispose();
                 
-                // Update channel if needed
-                if (_channel.Reader.CanCount && _channel.Reader.Count > 0)
-                {
-                    var newChannel = Channel.CreateBounded<PendingReport>(10);
-                    _channel = newChannel;
-                }
-                
-                // Start the monitoring task
+                // Start the monitoring task (uses existing channel - no need to replace it)
                 await StartTask(token ?? CancellationToken.None);
             }
             catch (Exception)
@@ -137,8 +130,9 @@ public class Resource<T> : IResource<T>
 
     private async ValueTask StartTask(CancellationToken token)
     {
-        var sw = new Stopwatch();
-        sw.Start();
+        // Token bucket for cumulative throughput throttling across all downloads
+        long availableTokens = 0;
+        DateTime lastTokenUpdate = DateTime.UtcNow;
 
         await foreach (var item in _channel.Reader.ReadAllAsync(token))
         {
@@ -146,18 +140,52 @@ public class Resource<T> : IResource<T>
             if (MaxThroughput is long.MaxValue or 0)
             {
                 item.Result.TrySetResult();
-                sw.Restart();
                 continue;
             }
 
-            var span = TimeSpan.FromSeconds((double) item.Size / MaxThroughput);
-
-
-            await Task.Delay(span, token);
-
-            sw.Restart();
-
-            item.Result.TrySetResult();
+            // Token bucket algorithm: cumulative bandwidth throttling
+            var now = DateTime.UtcNow;
+            var elapsed = now - lastTokenUpdate;
+            
+            // Add tokens based on elapsed time (MaxThroughput bytes per second)
+            if (elapsed.TotalSeconds > 0)
+            {
+                var tokensToAdd = (long)(MaxThroughput * elapsed.TotalSeconds);
+                availableTokens = Math.Min(availableTokens + tokensToAdd, MaxThroughput * 2); // Cap at 2x to allow bursts
+                lastTokenUpdate = now;
+            }
+            
+            // Consume tokens for this chunk
+            if (availableTokens >= item.Size)
+            {
+                // Enough tokens available, proceed immediately
+                availableTokens -= item.Size;
+                item.Result.TrySetResult();
+            }
+            else
+            {
+                // Not enough tokens, calculate delay needed to accumulate enough
+                var tokensNeeded = item.Size - availableTokens;
+                var delaySeconds = (double)tokensNeeded / MaxThroughput;
+                var delay = TimeSpan.FromSeconds(delaySeconds);
+                
+                // Delay to accumulate enough tokens
+                await Task.Delay(delay, token);
+                
+                // After delay, update time and add accumulated tokens
+                var afterDelay = DateTime.UtcNow;
+                var delayElapsed = afterDelay - lastTokenUpdate;
+                if (delayElapsed.TotalSeconds > 0)
+                {
+                    var tokensAccumulated = (long)(MaxThroughput * delayElapsed.TotalSeconds);
+                    availableTokens = Math.Min(availableTokens + tokensAccumulated, MaxThroughput * 2);
+                    lastTokenUpdate = afterDelay;
+                }
+                
+                // Now consume the tokens
+                availableTokens -= item.Size;
+                item.Result.TrySetResult();
+            }
         }
     }
 

@@ -113,6 +113,35 @@ public class FileExtractor
         return false;
     }
 
+    /// <summary>
+    /// Returns diagnostic information about which files and characters triggered foreign character detection
+    /// </summary>
+    private static (bool HasProblematicChars, List<(RelativePath File, List<char> Chars)> ProblematicFiles) GetProblematicCharacterDiagnostics(HashSet<RelativePath> onlyFiles)
+    {
+        var problematicFiles = new List<(RelativePath File, List<char> Chars)>();
+        
+        foreach (var file in onlyFiles)
+        {
+            var filename = file.ToString();
+            var problematicChars = new List<char>();
+            
+            foreach (var c in filename)
+            {
+                if (ProblematicChars.Contains(c))
+                {
+                    problematicChars.Add(c);
+                }
+            }
+            
+            if (problematicChars.Count > 0)
+            {
+                problematicFiles.Add((file, problematicChars));
+            }
+        }
+        
+        return (problematicFiles.Count > 0, problematicFiles);
+    }
+
     public async Task<IDictionary<RelativePath, T>> GatheringExtract<T>(
         IStreamFactory sFn,
         Predicate<RelativePath> shouldExtract,
@@ -143,13 +172,31 @@ public class FileExtractor
                 else
                 {
                     // Check if we need to use Proton 7z.exe for foreign character handling
+                    // NOTE: 7z archives are UTF-8 native and don't need proactive detection.
+                    // ZIP and RAR archives can have encoding issues, so we check them proactively.
+                    // Exit code 2 fallback (below) still handles reparse points/symlinks for all archive types.
                     bool useProtonFallback = RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && 
                                             onlyFiles != null && 
+                                            sFn.Name.FileName.Extension != Extension.FromPath(".7z") &&
                                             ContainsProblematicCharacters(onlyFiles);
                     
                     if (useProtonFallback)
                     {
-                        _logger.LogDebug("Archive {ArchiveName} contains files with foreign characters, using Proton 7z.exe for extraction", sFn.Name.FileName);
+                        // Get diagnostic information about which files triggered detection
+                        var (_, problematicFiles) = GetProblematicCharacterDiagnostics(onlyFiles);
+                        _logger.LogInformation("Archive {ArchiveName} ({ArchiveType}) contains files with foreign characters, using Proton 7z.exe for extraction", 
+                            sFn.Name.FileName, sFn.Name.FileName.Extension);
+                        _logger.LogDebug("Foreign character detection triggered by {Count} file(s):", problematicFiles.Count);
+                        foreach (var (file, chars) in problematicFiles.Take(10))
+                        {
+                            var charList = string.Join(", ", chars.Select(c => $"'{c}' (U+{(int)c:X4})"));
+                            _logger.LogDebug("  File: {FilePath} - Problematic characters: {Chars}", file, charList);
+                        }
+                        if (problematicFiles.Count > 10)
+                        {
+                            _logger.LogDebug("  ... and {AdditionalCount} more file(s) with foreign characters", problematicFiles.Count - 10);
+                        }
+                        
                         results = await GatheringExtractWithProton7Zip(sFn, shouldExtract,
                             mapfn, onlyFiles, token, progressFunction);
                     }
