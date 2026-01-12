@@ -2,11 +2,23 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
-## Version 0.4.6 - 2025-01-XX
+## Version 0.4.6 - 2026-01-06
 ### Critical Bug Fixes
 * **.wabbajack Download Source Array Bounds**: Fixed "Source array was not long enough" exception during .wabbajack file downloads
   - Added source array bounds checking in `AChunkedBufferingStream.ReadAsync` to prevent underflow when `chunkOffset >= chunkData.Length`
   - Completes the incomplete fix from v0.4.1 which only addressed destination buffer bounds
+* **Foreign Character Detection False Positives**: Fixed false positive foreign character detection causing 7z and RAR archives to incorrectly route to Proton 7z.exe extraction
+  - Restricted proactive foreign character detection to skip 7z archives (UTF-8 native, safe with Linux 7zz)
+  - ZIP and RAR archives still checked proactively for encoding issues
+  - Added diagnostic logging to show which files and characters trigger detection
+  - Exit code 2 and sanity check fallbacks still work for all archive types (reparse points, symlinks, missed encoding issues)
+  - Fixes installation failures where 7z archives that extract fine with Linux 7zz were incorrectly routed to Proton and failed
+* **Nexus OAuth Token Refresh**: Rectified incorrect Nexus Client ID references
+* **DirectoryNotFoundException for meta.ini Files**: Fixed installation failures during "Installing Included Files" phase when writing meta.ini files to directories with case-sensitive name mismatches
+  - Regression in `CreateDirectory()` was returning early when a case-insensitive directory match was found, preventing creation of the exact-case directory needed on Linux
+  - Removed early return in `AbsolutePathExtensions.CreateDirectory()` to ensure exact-case directories are created even when case-insensitive matches exist
+  - Added explicit parent directory creation and verification in `StandardInstaller.InstallIncludedFiles()` before writing inline files
+  - Fixes failures like "Could not find a part of the path '/path/to/Additional Dremora Faces/meta.ini'" when directory exists with different case (e.g., "Additional Dremora faces")
 
 ## Version 0.4.5 - 2025-01-02
 ### Critical Bug Fixes

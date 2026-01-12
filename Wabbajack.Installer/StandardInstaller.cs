@@ -746,6 +746,16 @@ public class StandardInstaller : AInstaller<StandardInstaller>
             {
                 UpdateProgress(1);
                 var outPath = _configuration.Install.Combine(directive.To);
+                // Ensure parent directory exists before writing - CreateDirectory() may fail silently
+                if (!outPath.Parent.DirectoryExists())
+                {
+                    outPath.Parent.CreateDirectory();
+                    // Verify it was actually created
+                    if (!outPath.Parent.DirectoryExists())
+                    {
+                        throw new DirectoryNotFoundException($"Failed to create directory: {outPath.Parent}");
+                    }
+                }
                 outPath.Delete();
 
                 switch (directive)
