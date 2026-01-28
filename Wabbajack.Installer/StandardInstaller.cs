@@ -876,10 +876,18 @@ public class StandardInstaller : AInstaller<StandardInstaller>
     {
         var data = Encoding.UTF8.GetString(await LoadBytesFromPath(directive.SourceDataID));
 
-        // Convert Linux paths to Proton-compatible Windows paths
-        var gameFolder = ProtonDetector.ConvertToWinePath(_configuration.GameFolder);
-        var installPath = ProtonDetector.ConvertToWinePath(_configuration.Install);
-        var downloadsPath = ProtonDetector.ConvertToWinePath(_configuration.Downloads);
+        // For ModOrganizer/INI config files we want clean, unquoted Wine-style paths.
+        // Texconv/texdiag still use ProtonDetector.ConvertToWinePath (with quoting) via TexConvImageLoader.
+        static string ToWinePathNoQuotes(AbsolutePath path)
+        {
+            // Map Linux path (/home/...) to Wine Z: drive (Z:\home\...)
+            // NOTE: Intentionally do NOT add surrounding quotes here; MO2 handles its own quoting/escaping.
+            return $"Z:{path.ToString().Replace('/', '\\')}";
+        }
+
+        var gameFolder = ToWinePathNoQuotes(_configuration.GameFolder);
+        var installPath = ToWinePathNoQuotes(_configuration.Install);
+        var downloadsPath = ToWinePathNoQuotes(_configuration.Downloads);
 
         data = data.Replace(Consts.GAME_PATH_MAGIC_BACK, gameFolder);
         data = data.Replace(Consts.GAME_PATH_MAGIC_DOUBLE_BACK, gameFolder.Replace("\\", "\\\\"));
