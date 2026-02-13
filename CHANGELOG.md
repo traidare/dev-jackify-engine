@@ -2,6 +2,14 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.4.8 - 2026-02-13
+### Improvements
+* **Remaining download size**: "Downloading Mod Archives" progress line now shows remaining GB (e.g. `(12/87) - 4.2MB/s - 23.1GB remaining`)
+
+### Bug Fixes
+* **Download speed always 0.0MB/s**: Replaced NIC-based `BandwidthMonitor` with `ITransferMetrics.BytesPerSecondSmoothed` — the old monitor picked the wrong network interface on some Linux systems
+* **ZIP extraction with Cyrillic filenames**: Added Cyrillic to `ProblematicChars` so archives with Cyrillic filenames (e.g. Soule-like Music, BottleRim) are routed to Proton 7z.exe instead of Linux 7zz, fixing "N results, expected M" sanity check failures
+
 ## Version 0.4.7 - 2026-01-28
 ### Critical Bug Fixes
 * **ModOrganizer.ini Path Quoting**: Fixed incorrect quoting/escaping of MO2 `customExecutables` by writing clean, unquoted Proton `Z:\...` paths in `ModOrganizer.ini`

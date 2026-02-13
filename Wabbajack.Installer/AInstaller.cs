@@ -22,6 +22,7 @@ using Wabbajack.FileExtractor.ExtractedFiles;
 using Wabbajack.Hashing.PHash;
 using Wabbajack.Hashing.xxHash64;
 using Wabbajack.Installer.Utilities;
+using Wabbajack.Networking.Http.Interfaces;
 using Wabbajack.Networking.WabbajackClientApi;
 using Wabbajack.Paths;
 using Wabbajack.Paths.IO;
@@ -70,6 +71,7 @@ public abstract class AInstaller<T>
     public Action<StatusUpdate>? OnStatusUpdate;
     protected readonly IResource<IInstaller> _limiter;
     protected readonly IServiceProvider _serviceProvider;
+    private readonly ITransferMetrics _transferMetrics;
     private Func<long, string> _statusFormatter = x => x.ToString();
 
 
@@ -81,10 +83,12 @@ public abstract class AInstaller<T>
         IResource<IInstaller> limiter,
         Client wjClient,
         IImageLoader imageLoader,
-        IServiceProvider serviceProvider)
+        IServiceProvider serviceProvider,
+        ITransferMetrics transferMetrics)
     {
         _limiter = limiter;
         _serviceProvider = serviceProvider;
+        _transferMetrics = transferMetrics;
         _manager = new TemporaryFileManager(config.Install.Combine("__temp__"));
         ExtractedModlistFolder = _manager.CreateFolder();
         _configuration = config;
@@ -783,21 +787,20 @@ public abstract class AInstaller<T>
             }
         }
 
-        var nonManualCount = missing.Count(a => a.State is not Manual);
+        var nonManualArchives = missing.Where(a => a.State is not Manual).ToList();
+        var nonManualCount = nonManualArchives.Count;
+        var totalDownloadBytes = nonManualArchives.Sum(a => a.Size);
 
-        // Only setup bandwidth monitoring and progress display if there are automated downloads
-        BandwidthMonitor? bandwidthMonitor = null;
+        // Only setup progress display if there are automated downloads
         CancellationTokenSource? displayCts = null;
         Task? displayTask = null;
         FileProgressTracker? fileProgressTracker = null;
         var completedCount = 0;
+        long completedBytes = 0;
         var lastFileProgressOutput = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>();
 
         if (nonManualCount > 0)
         {
-            // Professional bandwidth monitoring setup
-            bandwidthMonitor = new BandwidthMonitor(sampleWindowSeconds: 5); // 5-second rolling window
-            
             // File progress tracking for individual file progress output
             fileProgressTracker = new FileProgressTracker();
 
@@ -811,10 +814,13 @@ public abstract class AInstaller<T>
                     {
                         await Task.Delay(1000, displayCts.Token); // Update every 1 second
 
-                        var currentBandwidthMBps = bandwidthMonitor.GetCurrentBandwidthMBps();
+                        var currentBandwidthMBps = _transferMetrics.BytesPerSecondSmoothed / (1024.0 * 1024.0);
                         var currentCompleted = Interlocked.CompareExchange(ref completedCount, 0, 0);
+                        var currentCompletedBytes = Interlocked.Read(ref completedBytes);
+                        var remainingBytes = totalDownloadBytes - currentCompletedBytes;
+                        var remainingGB = remainingBytes / (1024.0 * 1024.0 * 1024.0);
 
-                        ConsoleOutput.PrintProgressWithDuration($"Downloading Mod Archives ({currentCompleted}/{nonManualCount}) - {currentBandwidthMBps:F1}MB/s");
+                        ConsoleOutput.PrintProgressWithDuration($"Downloading Mod Archives ({currentCompleted}/{nonManualCount}) - {currentBandwidthMBps:F1}MB/s - {remainingGB:F1}GB remaining");
                         
                         // Output individual file progress for all active files (with throttling)
                         if (fileProgressTracker != null)
@@ -869,8 +875,9 @@ public abstract class AInstaller<T>
                     // Download using standard method with file progress tracking
                     var hash = await _downloadDispatcher.Download(archive, outputPath, token, null, fileProgressTracker);
                     
-                    // Update completed count
+                    // Update completed count and bytes
                     Interlocked.Increment(ref completedCount);
+                    Interlocked.Add(ref completedBytes, archive.Size);
                     UpdateProgress(1);
                 }
                 catch (Exception ex)
@@ -911,7 +918,6 @@ public abstract class AInstaller<T>
             ConsoleOutput.ClearProgressLine();
         }
 
-        bandwidthMonitor?.Dispose();
         fileProgressTracker?.Dispose();
     }
 

@@ -29,6 +29,7 @@ using Wabbajack.DTOs.JsonConverters;
 using Wabbajack.Hashing.PHash;
 using Wabbajack.Hashing.xxHash64;
 using Wabbajack.Installer.Utilities;
+using Wabbajack.Networking.Http.Interfaces;
 using Wabbajack.Networking.WabbajackClientApi;
 using Wabbajack.Paths;
 using Wabbajack.Paths.IO;
@@ -44,9 +45,10 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         InstallerConfiguration config,
         IGameLocator gameLocator, FileExtractor.FileExtractor extractor,
         DTOSerializer jsonSerializer, Context vfs, FileHashCache fileHashCache,
-        DownloadDispatcher downloadDispatcher, ParallelOptions parallelOptions, IResource<IInstaller> limiter, Client wjClient, IImageLoader imageLoader, IServiceProvider serviceProvider) :
+        DownloadDispatcher downloadDispatcher, ParallelOptions parallelOptions, IResource<IInstaller> limiter, Client wjClient, IImageLoader imageLoader, IServiceProvider serviceProvider,
+        ITransferMetrics transferMetrics) :
         base(logger, config, gameLocator, extractor, jsonSerializer, vfs, fileHashCache, downloadDispatcher,
-            parallelOptions, limiter, wjClient, imageLoader, serviceProvider)
+            parallelOptions, limiter, wjClient, imageLoader, serviceProvider, transferMetrics)
     {
         MaxSteps = 15;
     }
@@ -69,7 +71,8 @@ public class StandardInstaller : AInstaller<StandardInstaller>
             provider.GetRequiredService<IResource<IInstaller>>(),
             provider.GetRequiredService<Client>(),
             texConvImageLoader,
-            provider);
+            provider,
+            provider.GetRequiredService<ITransferMetrics>());
     }
 
     public override async Task<InstallResult> Begin(CancellationToken token)
