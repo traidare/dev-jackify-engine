@@ -5,6 +5,7 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
 ## Version 0.4.8 - 2026-02-13
 ### Improvements
 * **Remaining download size**: "Downloading Mod Archives" progress line now shows remaining GB (e.g. `(12/87) - 4.2MB/s - 23.1GB remaining`)
+* **GE-Proton / ProtonFixes**: When initializing Proton, the engine now ensures `~/.config/protonfixes` exists.
 
 ### Bug Fixes
 * **Download speed always 0.0MB/s**: Replaced NIC-based `BandwidthMonitor` with `ITransferMetrics.BytesPerSecondSmoothed` — the old monitor picked the wrong network interface on some Linux systems
