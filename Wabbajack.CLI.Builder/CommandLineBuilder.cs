@@ -84,7 +84,9 @@ public class CommandLineBuilder
                     Console.Error.WriteLine("\nRun with --debug flag for technical details and stack trace.");
                 }
                 
-                context.ExitCode = 1;
+                var structuredType = ClassifyException(exception);
+                StructuredError.WriteError(structuredType, GetUserFriendlyMessage(exception));
+                context.ExitCode = StructuredError.ExitCodeFor(structuredType);
             });
 
         // Build the parser and use it to invoke - this ensures exception handler is applied
@@ -270,6 +272,42 @@ public class CommandLineBuilder
         }
         
         return context.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Maps an exception to a structured error type string for the JE protocol.
+    /// Walks the inner exception chain so wrapped exceptions are classified correctly.
+    /// </summary>
+    private static string ClassifyException(Exception exception)
+    {
+        var current = exception;
+        while (current != null)
+        {
+            if (current is UnauthorizedAccessException)
+                return StructuredError.ErrorType.PermissionDenied;
+
+            if (current is System.IO.FileNotFoundException or System.IO.DirectoryNotFoundException)
+                return StructuredError.ErrorType.FileNotFound;
+
+            if (current is System.Net.Http.HttpRequestException httpEx)
+            {
+                var s = httpEx.Message;
+                if (s.Contains("401") || s.Contains("403") || s.Contains("Unauthorized") || s.Contains("Forbidden"))
+                    return StructuredError.ErrorType.AuthFailed;
+                return StructuredError.ErrorType.NetworkError;
+            }
+
+            var msg = current.Message;
+            if (msg.Contains("ENOSPC") || (msg.Contains("No space left")))
+                return StructuredError.ErrorType.DiskFull;
+            if (msg.Contains("EACCES") || msg.Contains("Access is denied"))
+                return StructuredError.ErrorType.PermissionDenied;
+            if (msg.Contains("Missing archive") || msg.Contains("Failed to look up file"))
+                return StructuredError.ErrorType.FileNotFound;
+
+            current = current.InnerException;
+        }
+        return StructuredError.ErrorType.EngineError;
     }
 }
 

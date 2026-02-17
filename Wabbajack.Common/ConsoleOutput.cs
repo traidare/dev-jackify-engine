@@ -4,8 +4,6 @@ namespace Wabbajack.Common;
 
 public static class ConsoleOutput
 {
-    private static readonly DateTime _startTime = DateTime.UtcNow;
-    
     /// <summary>
     /// Controls whether FILE_PROGRESS lines are output.
     /// Default is false (suppressed) - set to true via --show-file-progress flag.
@@ -14,33 +12,26 @@ public static class ConsoleOutput
     public static bool ShowFileProgress { get; set; } = false;
 
     /// <summary>
-    /// Prints a message with a duration timestamp (elapsed time since program start)
-    /// Format: [HH:MM:SS] message
+    /// Prints a message to stdout.
     /// </summary>
     public static void PrintWithDuration(string message)
     {
-        var elapsed = DateTime.UtcNow - _startTime;
-        Console.WriteLine($"[{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}] {message}");
+        Console.WriteLine(message);
     }
 
     public static void PrintProgressWithDuration(string message)
     {
-        var elapsed = DateTime.UtcNow - _startTime;
-        var timestamped = $"[{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}] {message}";
-        
         try
         {
-            // Clear the current line and write the progress message (uses \r to overwrite same line)
-            Console.Write($"\r\x1b[K{timestamped}");
+            // Clear the current line and write the progress message (uses \r to overwrite same line in terminal)
+            Console.Write($"\r\x1b[K{message}");
             Console.Out.Flush();
         }
         catch
         {
-            // Fallback if ANSI escape codes aren't supported
-            // Pad with spaces to clear the line, then return to start with \r
-            var windowWidth = 120; // Default fallback width
+            var windowWidth = 120;
             try { windowWidth = Console.WindowWidth; } catch { }
-            Console.Write($"\r{timestamped.PadRight(windowWidth)}");
+            Console.Write($"\r{message.PadRight(windowWidth)}");
             Console.Out.Flush();
         }
     }
@@ -65,14 +56,10 @@ public static class ConsoleOutput
     }
 
     /// <summary>
-    /// Gets the current duration timestamp as a string
-    /// Format: [HH:MM:SS]
+    /// Returns empty string. Kept for call-site compatibility; callers should be cleaned up.
     /// </summary>
-    public static string GetDurationTimestamp()
-    {
-        var elapsed = DateTime.UtcNow - _startTime;
-        return $"[{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}]";
-    }
+    [Obsolete("Timestamp prefix removed - do not use")]
+    public static string GetDurationTimestamp() => "";
 
     /// <summary>
     /// Prints individual file progress in the format expected by Jackify GUI parser.

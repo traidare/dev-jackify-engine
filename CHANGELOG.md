@@ -2,10 +2,19 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
-## Version 0.4.8 - 2026-02-13
+## Version 0.4.9 - 2026-02-17
+### Output Quality Improvements
+* **Removed blank lines**: Eliminated spurious `Console.WriteLine()` calls that added a blank line after every section header and progress update, reducing log noise by ~10%
+* **Removed elapsed-time prefix**: Stripped `[HH:MM:SS]` timestamp from all stdout lines — Jackify prepends its own wall-clock timestamp, making the engine prefix redundant and producing double-timestamp noise in logs
+* **Install phase heartbeat**: Display loop in `InstallArchives` now emits a newline-terminated progress line every 5 seconds so Jackify's line-by-line stdout capture sees live progress during long file-install phases (previously silent for 20-30s at a time while large files were being processed)
+
+## Version 0.4.8 - 2026-02-16
 ### Improvements
 * **Remaining download size**: "Downloading Mod Archives" progress line now shows remaining GB (e.g. `(12/87) - 4.2MB/s - 23.1GB remaining`)
 * **GE-Proton / ProtonFixes**: When initializing Proton, the engine now ensures `~/.config/protonfixes` exists.
+* **Structured error output**: Engine now emits JSON error lines to stderr on failure, tagged with `"je":"1"` for consumption by the Jackify Python frontend. Each line includes `level`, `type`, `message`, and optional `context` fields. Covers all classified failure paths: `auth_failed`, `premium_required`, `network_error`, `disk_full`, `permission_denied`, `archive_corrupt`, `file_not_found`, `validation_failed`, `engine_error`.
+* **Meaningful exit codes**: Exit codes 2–6 now map to specific failure categories (2=auth, 3=network, 4=disk/IO, 5=validation, 6=engine). Exit code 1 retained as fallback for unknown/cancelled paths. Fully backward-compatible — old Jackify versions ignore stderr entirely.
+* **Crash handler**: `AppDomain.UnhandledException` handler registered in `Program.Main` ensures a structured `engine_error` line is emitted even for exceptions that escape the CLI pipeline (e.g. DI host construction failures), with exit code 6.
 
 ### Bug Fixes
 * **Download speed always 0.0MB/s**: Replaced NIC-based `BandwidthMonitor` with `ITransferMetrics.BytesPerSecondSmoothed` — the old monitor picked the wrong network interface on some Linux systems

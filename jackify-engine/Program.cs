@@ -28,6 +28,22 @@ internal class Program
 {
     private static async Task<int> Main(string[] args)
     {
+        // Catch any exception that escapes the CLI pipeline (e.g. during DI host construction
+        // or unobserved task faults). Emit a structured line before the process terminates.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            var ex = e.ExceptionObject as Exception;
+            var msg = ex != null
+                ? $"{ex.GetType().Name}: {ex.Message}"
+                : "Unknown unhandled exception";
+            var ctx = ex?.StackTrace is { } st
+                ? new System.Collections.Generic.Dictionary<string, object?> { ["detail"] = st }
+                : null;
+            Wabbajack.CLI.Builder.StructuredError.WriteError(
+                Wabbajack.CLI.Builder.StructuredError.ErrorType.EngineError, msg, ctx);
+            Environment.Exit(6);
+        };
+
         // Check for debug mode
         bool debugMode = Array.IndexOf(args, "--debug") >= 0;
         
