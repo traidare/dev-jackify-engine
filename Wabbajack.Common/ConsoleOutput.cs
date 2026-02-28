@@ -5,9 +5,8 @@ namespace Wabbajack.Common;
 public static class ConsoleOutput
 {
     /// <summary>
-    /// Controls whether FILE_PROGRESS lines are output.
-    /// Default is false (suppressed) - set to true via --show-file-progress flag.
-    /// Jackify GUI should always pass --show-file-progress to enable detailed file progress.
+    /// When true, [FILE_PROGRESS] tagged lines are emitted to stdout.
+    /// Set by --show-file-progress flag in Program.Main before verb dispatch.
     /// </summary>
     public static bool ShowFileProgress { get; set; } = false;
 
@@ -21,19 +20,8 @@ public static class ConsoleOutput
 
     public static void PrintProgressWithDuration(string message)
     {
-        try
-        {
-            // Clear the current line and write the progress message (uses \r to overwrite same line in terminal)
-            Console.Write($"\r\x1b[K{message}");
-            Console.Out.Flush();
-        }
-        catch
-        {
-            var windowWidth = 120;
-            try { windowWidth = Console.WindowWidth; } catch { }
-            Console.Write($"\r{message.PadRight(windowWidth)}");
-            Console.Out.Flush();
-        }
+        Console.Write(message + "\r");
+        Console.Out.Flush();
     }
 
     /// <summary>
@@ -64,8 +52,7 @@ public static class ConsoleOutput
     /// <summary>
     /// Prints individual file progress in the format expected by Jackify GUI parser.
     /// Format: [FILE_PROGRESS] Operation: filename (percent%) [speed] (completed/total)
-    /// Outputs to stderr to keep it separate from normal stdout.
-    /// Uses \r for all progress updates (overwrites same line) to prevent console spam.
+    /// Outputs to stdout with a newline so Jackify's line-by-line capture sees each line.
     /// Only outputs if ShowFileProgress is true (enabled via --show-file-progress flag).
     /// </summary>
     public static void PrintFileProgress(string operation, string filename, double percent, string speed, int? completed = null, int? total = null)
@@ -86,8 +73,8 @@ public static class ConsoleOutput
         
         var message = $"[FILE_PROGRESS] {operation}: {filename} ({percentStr}%){speedPart}{counterPart}";
         
-        // Use \r for ALL progress updates (including Completed) to overwrite same line and prevent console spam
-        Console.Error.Write($"\r{message}");
-        Console.Error.Flush();
+        // Write to stdout with newline so Jackify's line-by-line capture sees each FILE_PROGRESS line
+        Console.Out.WriteLine(message);
+        Console.Out.Flush();
     }
 }

@@ -167,11 +167,11 @@ public abstract class AInstaller<T>
             {
                 try
                 {
-                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
-                    
+                    await Task.Delay(250, displayCts.Token); // Update every 250ms
+
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
-                    
+
                     // Read current processed count (may be slightly stale, but fine for progress display)
                     var currentProcessed = processedEntries;
                     
@@ -415,7 +415,7 @@ public abstract class AInstaller<T>
             {
                 try
                 {
-                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
+                    await Task.Delay(250, displayCts.Token); // Update every 250ms
 
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
@@ -448,13 +448,13 @@ public abstract class AInstaller<T>
                     var overallProgressMessage = $"Installing files {currentProcessedFiles}/{totalFiles} ({processedSizeStr}/{totalSizeStr}) - Converting textures: {currentProcessedTextures}/{totalTextures}";
                     ConsoleOutput.PrintProgressWithDuration(overallProgressMessage);
 
-                    // Emit a newline every 5 seconds so Jackify's line-by-line capture sees progress
+                    // Periodic heartbeat to stderr for log capture (does not duplicate stdout progress line)
                     if ((now - lastHeartbeat).TotalSeconds >= 5)
                     {
-                        Console.WriteLine(overallProgressMessage);
+                        Console.Error.WriteLine(overallProgressMessage);
                         lastHeartbeat = now;
                     }
-                    
+
                     foreach (var (filename, progress) in activeFiles)
                     {
                         var shouldOutput = progress.IsCompleted || 
@@ -813,20 +813,28 @@ public abstract class AInstaller<T>
                 {
                     try
                     {
-                        await Task.Delay(1000, displayCts.Token); // Update every 1 second
+                        await Task.Delay(250, displayCts.Token); // Update every 250ms
 
                         var currentBandwidthMBps = _transferMetrics.BytesPerSecondSmoothed / (1024.0 * 1024.0);
                         var currentCompleted = Interlocked.CompareExchange(ref completedCount, 0, 0);
                         var currentCompletedBytes = Interlocked.Read(ref completedBytes);
-                        var remainingBytes = totalDownloadBytes - currentCompletedBytes;
+
+                        // Also subtract bytes already received for in-progress downloads so the
+                        // remaining value decreases continuously, not just when an archive finishes.
+                        var activeFiles = fileProgressTracker?.GetActiveFiles();
+                        long inProgressBytes = 0;
+                        if (activeFiles != null)
+                            foreach (var (_, p) in activeFiles)
+                                if (!p.IsCompleted) inProgressBytes += p.CurrentBytes;
+
+                        var remainingBytes = Math.Max(0, totalDownloadBytes - currentCompletedBytes - inProgressBytes);
                         var remainingGB = remainingBytes / (1024.0 * 1024.0 * 1024.0);
 
                         ConsoleOutput.PrintProgressWithDuration($"Downloading Mod Archives ({currentCompleted}/{nonManualCount}) - {currentBandwidthMBps:F1}MB/s - {remainingGB:F1}GB remaining");
-                        
+
                         // Output individual file progress for all active files (with throttling)
-                        if (fileProgressTracker != null)
+                        if (activeFiles != null)
                         {
-                            var activeFiles = fileProgressTracker.GetActiveFiles();
                             var now = DateTime.UtcNow;
                             
                             foreach (var (filename, progress) in activeFiles)
@@ -1127,15 +1135,15 @@ public abstract class AInstaller<T>
             {
                 try
                 {
-                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
-                    
+                    await Task.Delay(250, displayCts.Token); // Update every 250ms
+
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
-                    
+
                     foreach (var (filename, progress) in activeFiles)
                     {
-                        var shouldOutput = progress.IsCompleted || 
-                            !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) || 
+                        var shouldOutput = progress.IsCompleted ||
+                            !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) ||
                             (now - lastOutput).TotalMilliseconds >= 200;
                         
                         if (shouldOutput)

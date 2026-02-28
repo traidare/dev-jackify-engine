@@ -1,83 +1,123 @@
 using System;
-using System.Collections.Concurrent;
+using System.IO;
 using System.Threading;
 using Wabbajack.Networking.Http.Interfaces;
 
 namespace Wabbajack.Networking.Http;
 
 /// <summary>
-/// Lightweight, lock-free-ish transfer metrics aggregator. Stores a small ring of recent samples
-/// to compute instantaneous rate and an EWMA for stability. Thread-safe.
+/// NIC-based transfer metrics. Reads /proc/net/dev byte counters on a 500ms timer so
+/// reported speed is accurate regardless of connection speed or chunk size. Interface is
+/// detected via /proc/net/route (default-route interface is unambiguous).
 /// </summary>
-public class TransferMetrics : ITransferMetrics
+public class TransferMetrics : ITransferMetrics, IDisposable
 {
-    private const int SampleCapacity = 128; // enough for ~few seconds of samples under high concurrency
-    private readonly object _lock = new();
-    private readonly (long bytes, long ticks)[] _samples = new (long, long)[SampleCapacity];
-    private int _head;
     private long _totalBytes;
-    private double _ewmaBytesPerSecond;
+    private readonly string? _iface;
+    private long _lastNicBytes;
+    private DateTime _lastSampleTime;
+    private double _lastInstant;
+    private double _ewma;
+    private readonly object _lock = new();
+    private readonly Timer? _timer;
 
-    public void Record(long bytes)
+    public TransferMetrics()
     {
-        if (bytes <= 0) return;
-        var nowTicks = DateTime.UtcNow.Ticks;
-        Interlocked.Add(ref _totalBytes, bytes);
+        _iface = DetectDefaultInterface();
+        if (_iface != null)
+        {
+            _lastNicBytes = ReadNicRxBytes(_iface);
+            _lastSampleTime = DateTime.UtcNow;
+            _timer = new Timer(Sample, null, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
+        }
+    }
+
+    private void Sample(object? _)
+    {
+        if (_iface == null) return;
+
+        var nowBytes = ReadNicRxBytes(_iface);
+        var now = DateTime.UtcNow;
 
         lock (_lock)
         {
-            _samples[_head] = (bytes, nowTicks);
-            _head = (_head + 1) % SampleCapacity;
+            var elapsed = (now - _lastSampleTime).TotalSeconds;
+            if (elapsed > 0)
+            {
+                var delta = nowBytes - _lastNicBytes;
+                if (delta >= 0) // guard against counter reset or interface restart
+                {
+                    var instant = delta / elapsed;
+                    _lastInstant = instant;
+                    const double alpha = 0.3;
+                    _ewma = _ewma <= 0 ? instant : (alpha * instant + (1 - alpha) * _ewma);
+                }
 
-            // Update EWMA with alpha tuned for ~5s horizon at ~10Hz sampling
-            var alpha = 0.2; // conservative smoothing
-            var instant = ComputeInstantaneous(nowTicks);
-            _ewmaBytesPerSecond = _ewmaBytesPerSecond <= 0 ? instant : (alpha * instant + (1 - alpha) * _ewmaBytesPerSecond);
+                _lastNicBytes = nowBytes;
+                _lastSampleTime = now;
+            }
         }
+    }
+
+    // Find the interface that carries the default route by looking for destination 00000000.
+    private static string? DetectDefaultInterface()
+    {
+        try
+        {
+            var lines = File.ReadAllLines("/proc/net/route");
+            foreach (var line in lines)
+            {
+                var fields = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+                if (fields.Length >= 2 && fields[1].Trim() == "00000000")
+                    return fields[0].Trim();
+            }
+        }
+        catch { /* non-Linux or permission issue */ }
+        return null;
+    }
+
+    // Read receive-bytes counter for the named interface from /proc/net/dev.
+    private static long ReadNicRxBytes(string iface)
+    {
+        try
+        {
+            var lines = File.ReadAllLines("/proc/net/dev");
+            foreach (var line in lines)
+            {
+                var trimmed = line.TrimStart();
+                if (!trimmed.StartsWith(iface + ":", StringComparison.Ordinal)) continue;
+
+                var data = trimmed.AsSpan(trimmed.IndexOf(':') + 1).TrimStart();
+                var spaceIdx = data.IndexOf(' ');
+                var token = spaceIdx >= 0 ? data[..spaceIdx] : data;
+                if (long.TryParse(token, out var bytes))
+                    return bytes;
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    public void Record(long bytes)
+    {
+        if (bytes > 0)
+            Interlocked.Add(ref _totalBytes, bytes);
     }
 
     public long TotalBytes => Interlocked.Read(ref _totalBytes);
 
     public double BytesPerSecond1s
     {
-        get
-        {
-            lock (_lock)
-            {
-                return ComputeInstantaneous(DateTime.UtcNow.Ticks);
-            }
-        }
+        get { lock (_lock) return _lastInstant; }
     }
 
     public double BytesPerSecondSmoothed
     {
-        get
-        {
-            lock (_lock)
-            {
-                return _ewmaBytesPerSecond;
-            }
-        }
+        get { lock (_lock) return _ewma; }
     }
 
-    private double ComputeInstantaneous(long nowTicks)
+    public void Dispose()
     {
-        // Sum samples within the last ~1s window
-        long windowTicks = TimeSpan.FromSeconds(1).Ticks;
-        long cutoff = nowTicks - windowTicks;
-        long bytes = 0;
-
-        for (int i = 0; i < SampleCapacity; i++)
-        {
-            var (b, t) = _samples[i];
-            if (t >= cutoff && b > 0)
-            {
-                bytes += b;
-            }
-        }
-
-        return bytes / 1.0; // bytes per second over ~1s window
+        _timer?.Dispose();
     }
 }
-
-

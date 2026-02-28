@@ -4,16 +4,18 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
 
 ## Version 0.4.8 - 2026-02-17
 ### Improvements
-* **Remaining download size**: "Downloading Mod Archives" progress line now shows remaining GB (e.g. `(12/87) - 4.2MB/s - 23.1GB remaining`)
-* **Stdout output quality**: Removed spurious blank lines after every section header and progress update; removed `[HH:MM:SS]` elapsed-time prefix from all stdout lines (Jackify adds its own wall-clock timestamp, making the engine prefix produce double-timestamp noise in logs); `InstallArchives` display loop now emits a newline-terminated progress line every 5 seconds so Jackify's line-by-line stdout capture sees live progress during long file-install phases
+* **Remaining download size**: "Downloading Mod Archives" progress line now shows remaining GB (e.g. `(12/87) - 4.2MB/s - 23.1GB remaining`); counter decrements continuously as in-progress bytes are received, not only when an archive finishes
+* **Stdout output quality**: Removed spurious blank lines after every section header and progress update; removed `[HH:MM:SS]` elapsed-time prefix from all stdout lines (Jackify adds its own wall-clock timestamp, making the engine prefix produce double-timestamp noise in logs); `[FILE_PROGRESS]` lines written to stdout with newline so Jackify's line-by-line capture sees each line; install-phase heartbeat moved to stderr to avoid duplicating the stdout progress line
+* **Progress polling**: Display loops poll every 250ms (was 1000ms) for smoother progress updates
 * **GE-Proton / ProtonFixes**: When initializing Proton, the engine now ensures `~/.config/protonfixes` exists.
 * **Structured error output**: Engine now emits JSON error lines to stderr on failure, tagged with `"je":"1"` for consumption by the Jackify Python frontend. Each line includes `level`, `type`, `message`, and optional `context` fields. Covers all classified failure paths: `auth_failed`, `premium_required`, `network_error`, `disk_full`, `permission_denied`, `archive_corrupt`, `file_not_found`, `validation_failed`, `engine_error`.
 * **Meaningful exit codes**: Exit codes 2–6 now map to specific failure categories (2=auth, 3=network, 4=disk/IO, 5=validation, 6=engine). Exit code 1 retained as fallback for unknown/cancelled paths. Fully backward-compatible — old Jackify versions ignore stderr entirely.
 * **Crash handler**: `AppDomain.UnhandledException` handler registered in `Program.Main` ensures a structured `engine_error` line is emitted even for exceptions that escape the CLI pipeline (e.g. DI host construction failures), with exit code 6.
 
 ### Bug Fixes
-* **Download speed always 0.0MB/s**: Replaced NIC-based `BandwidthMonitor` with `ITransferMetrics.BytesPerSecondSmoothed` — the old monitor picked the wrong network interface on some Linux systems
+* **Download speed always 0.0MB/s**: `TransferMetrics` rewritten to read NIC byte counters from `/proc/net/dev` on a 500ms timer; default interface detected via `/proc/net/route` (unambiguous default-route lookup). Replaces the previous ring-buffer approach and the earlier `BandwidthMonitor` class that picked the wrong interface on multi-NIC systems.
 * **ZIP extraction with Cyrillic filenames**: Added Cyrillic to `ProblematicChars` so archives with Cyrillic filenames (e.g. Soule-like Music, BottleRim) are routed to Proton 7z.exe instead of Linux 7zz, fixing "N results, expected M" sanity check failures
+* **Stale OAuth token blocks fresh session**: When an encrypted OAuth token file fails to refresh (e.g. token revoked after re-auth in Jackify GUI), the stale file is now deleted and the engine falls through to the `NEXUS_OAUTH_INFO` env var containing the fresh token. Previously a stale file permanently blocked a freshly-authenticated session.
 
 ## Version 0.4.7 - 2026-01-28
 ### Critical Bug Fixes
