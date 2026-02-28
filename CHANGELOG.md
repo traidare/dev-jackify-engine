@@ -2,6 +2,8 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.5.0 - TBD
+
 ## Version 0.4.8 - 2026-02-17
 ### Improvements
 * **Remaining download size**: "Downloading Mod Archives" progress line now shows remaining GB (e.g. `(12/87) - 4.2MB/s - 23.1GB remaining`); counter decrements continuously as in-progress bytes are received, not only when an archive finishes
