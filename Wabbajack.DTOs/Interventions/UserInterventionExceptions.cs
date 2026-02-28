@@ -7,10 +7,18 @@ namespace Wabbajack.DTOs.Interventions;
 /// </summary>
 public class ManualDownloadRequiredException : Exception
 {
+    /// <summary>The archive that requires manual download. Null only when thrown via legacy code paths.</summary>
+    public Archive? Archive { get; }
+
+    public ManualDownloadRequiredException(Archive archive, string message) : base(message)
+    {
+        Archive = archive;
+    }
+
     public ManualDownloadRequiredException(string message) : base(message)
     {
     }
-    
+
     public ManualDownloadRequiredException(string message, Exception innerException) : base(message, innerException)
     {
     }

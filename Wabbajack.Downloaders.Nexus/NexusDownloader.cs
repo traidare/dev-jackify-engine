@@ -30,8 +30,6 @@ public class NexusDownloader : ADownloader<Nexus>, IUrlDownloader
     private readonly HttpClient _client;
     private readonly IHttpDownloader _downloader;
     private readonly ILogger<NexusDownloader> _logger;
-    private readonly IUserInterventionHandler _userInterventionHandler;
-    private readonly IResource<IUserInterventionHandler> _interventionLimiter;
 
     private const bool IsManualDebugMode = false;
 
@@ -42,8 +40,6 @@ public class NexusDownloader : ADownloader<Nexus>, IUrlDownloader
         _client = client;
         _downloader = downloader;
         _api = api;
-        _userInterventionHandler = userInterventionHandler;
-        _interventionLimiter = interventionLimiter;
     }
 
     public override Task<bool> Prepare()
@@ -118,41 +114,13 @@ public class NexusDownloader : ADownloader<Nexus>, IUrlDownloader
 
     public override Priority Priority => Priority.Normal;
 
-    private static bool _hasShownPremiumWarning = false;
-
     public override async Task<Hash> Download(Archive archive, Nexus state, AbsolutePath destination,
         IJob job, CancellationToken token)
     {
         if (IsManualDebugMode || !(await _api.IsPremium(token)))
         {
-            if (IsManualDebugMode)
-            {
-                _logger.LogDebug("Manual download mode enabled for {ArchiveName} (Game: {Game}, ModID: {ModID}, FileID: {FileID})", 
-                    archive.Name, state.Game, state.ModID, state.FileID);
-            }
-            else
-            {
-                if (!_hasShownPremiumWarning)
-                {
-                    _logger.LogCritical("");
-                    _logger.LogCritical("╔══════════════════════════════════════════════════════════════════════════════╗");
-                    _logger.LogCritical("║                    NEXUS PREMIUM REQUIRED FOR DOWNLOADS                       ║");
-                    _logger.LogCritical("╚══════════════════════════════════════════════════════════════════════════════╝");
-                    _logger.LogCritical("");
-                    _logger.LogCritical("Your Nexus account does not have Premium membership. Nexus Premium is required");
-                    _logger.LogCritical("for automated downloads. Downloads will appear stuck at 0MB/s because they require");
-                    _logger.LogCritical("manual intervention.");
-                    _logger.LogCritical("");
-                    _logger.LogCritical("Options:");
-                    _logger.LogCritical("  1. Purchase Nexus Premium to enable automated downloads");
-                    _logger.LogCritical("  2. Continue with manual downloads (installation will show a summary at the end)");
-                    _logger.LogCritical("");
-                    _hasShownPremiumWarning = true;
-                }
-                
-                _logger.LogWarning("Nexus Premium required: {ArchiveName} (Game: {Game}, ModID: {ModID}, FileID: {FileID}) - falling back to manual download", 
-                    archive.Name, state.Game, state.ModID, state.FileID);
-            }
+            _logger.LogDebug("Non-premium Nexus archive requires manual download: {ArchiveName} (Game: {Game}, ModID: {ModID}, FileID: {FileID})",
+                archive.Name, state.Game, state.ModID, state.FileID);
             return await DownloadManually(archive, state, destination, job, token);
         }
         else
@@ -192,28 +160,7 @@ public class NexusDownloader : ADownloader<Nexus>, IUrlDownloader
                 
                 if (ex.StatusCode == HttpStatusCode.Forbidden)
                 {
-                    if (!_hasShownPremiumWarning)
-                    {
-                        _logger.LogCritical("");
-                        _logger.LogCritical("╔══════════════════════════════════════════════════════════════════════════════╗");
-                        _logger.LogCritical("║                    NEXUS PREMIUM REQUIRED FOR DOWNLOADS                       ║");
-                        _logger.LogCritical("╚══════════════════════════════════════════════════════════════════════════════╝");
-                        _logger.LogCritical("");
-                        _logger.LogCritical("Nexus API returned 403 Forbidden. This typically means:");
-                        _logger.LogCritical("  • Your Nexus account does not have Premium membership");
-                        _logger.LogCritical("  • Nexus Premium is required for automated downloads");
-                        _logger.LogCritical("");
-                        _logger.LogCritical("Downloads will appear stuck at 0MB/s because they require manual intervention.");
-                        _logger.LogCritical("");
-                        _logger.LogCritical("Options:");
-                        _logger.LogCritical("  1. Purchase Nexus Premium to enable automated downloads");
-                        _logger.LogCritical("  2. Continue with manual downloads (installation will show a summary at the end)");
-                        _logger.LogCritical("");
-                        _hasShownPremiumWarning = true;
-                    }
-                    
-                    _logger.LogWarning("Nexus API returned 403 Forbidden for {ArchiveName} (ModID: {ModID}, FileID: {FileID}), falling back to manual download", 
-                        archive.Name, state.ModID, state.FileID);
+                    _logger.LogDebug("403 Forbidden for {ArchiveName} — Premium required, routing to manual download", archive.Name);
                     return await DownloadManually(archive, state, destination, job, token);
                 }
                 else if (ex.StatusCode == HttpStatusCode.NotFound)
@@ -228,38 +175,9 @@ public class NexusDownloader : ADownloader<Nexus>, IUrlDownloader
         }
     }
 
-    private async Task<Hash> DownloadManually(Archive archive, Nexus state, AbsolutePath destination, IJob job, CancellationToken token)
+    private Task<Hash> DownloadManually(Archive archive, Nexus state, AbsolutePath destination, IJob job, CancellationToken token)
     {
-        var md = new ManualDownload(new Archive
-        {
-            Name = archive.Name,
-            Hash = archive.Hash,
-            Meta = archive.Meta,
-            Size = archive.Size,
-            State = new Manual
-            {
-                Prompt = "Click Download - Buy Nexus Premium to automate this process",
-                Url = new Uri($"https://www.nexusmods.com/{state.Game.MetaData().NexusName}/mods/{state.ModID}?tab=files&file_id={state.FileID}")
-            }
-        });
-
-        ManualDownload.BrowserDownloadState browserState;
-        using (var _ = await _interventionLimiter.Begin("Downloading file manually", 1, token))
-        {
-            _userInterventionHandler.Raise(md);
-            browserState = await md.Task;
-        }
-
-        
-        var msg = browserState.ToHttpRequestMessage();
-        
-        using var response = await _client.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead,  token);
-        if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException(response.ReasonPhrase, null, statusCode:response.StatusCode);
-
-        await using var strm = await response.Content.ReadAsStreamAsync(token);
-        await using var os = destination.Open(FileMode.Create, FileAccess.Write, FileShare.None);
-        return await strm.HashingCopy(os, token, job);
+        throw new ManualDownloadRequiredException(archive, $"Manual download required: {archive.Name}");
     }
 
     public override async Task<bool> Verify(Archive archive, Nexus state, IJob job, CancellationToken token)

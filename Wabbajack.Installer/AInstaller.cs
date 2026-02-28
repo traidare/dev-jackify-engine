@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -777,17 +779,8 @@ public abstract class AInstaller<T>
             .SelectAsync(async m => await _downloadDispatcher.MaybeProxy(m, token))
             .ToList();
 
-        if (download)
-        {
-            var result = SendDownloadMetrics(missing);
-            foreach (var a in missing.Where(a => a.State is Manual))
-            {
-                var outputPath = _configuration.Downloads.Combine(a.Name);
-                await DownloadArchive(a, true, token, outputPath);
-                UpdateProgress(1);
-            }
-        }
-
+        // Collect Manual-state archives upfront — they never go through automated download
+        var manualStateArchives = missing.Where(a => a.State is Manual).ToList();
         var nonManualArchives = missing.Where(a => a.State is not Manual).ToList();
         var nonManualCount = nonManualArchives.Count;
         var totalDownloadBytes = nonManualArchives.Sum(a => a.Size);
@@ -866,34 +859,35 @@ public abstract class AInstaller<T>
                 }
             }, displayCts.Token);
         }
-        else if (missing.Any(a => a.State is Manual))
-        {
-            // All downloads are manual - inform user
-            ConsoleOutput.PrintWithDuration("All remaining downloads require Nexus Premium");
-        }
+        // Collect non-premium Nexus archives that fail with ManualDownloadRequiredException
+        var nexusManualFailures = new System.Collections.Concurrent.ConcurrentBag<Archive>();
 
-        await missing
+        await nonManualArchives
             .Shuffle()
-            .Where(a => a.State is not Manual)
             .PDoAll(async archive =>
             {
                 var outputPath = _configuration.Downloads.Combine(archive.Name);
-                
+
                 try
                 {
                     // Download using standard method with file progress tracking
                     var hash = await _downloadDispatcher.Download(archive, outputPath, token, null, fileProgressTracker);
-                    
+
                     // Update completed count and bytes
                     Interlocked.Increment(ref completedCount);
                     Interlocked.Add(ref completedBytes, archive.Size);
                     UpdateProgress(1);
                 }
+                catch (ManualDownloadRequiredException mde)
+                {
+                    // Non-premium Nexus archive — collect for the manual download protocol
+                    nexusManualFailures.Add(mde.Archive ?? archive);
+                }
                 catch (Exception ex)
                 {
                     // Mark as failed in tracker
                     fileProgressTracker?.MarkCompleted(archive.Name);
-                    
+
                     // Provide concise user-facing context and a URL in non-debug, with full details in debug
                     var modInfo = GetModInfoFromArchive(archive);
                     var sourceUrl = GetSourceUrlFromArchive(archive);
@@ -928,7 +922,121 @@ public abstract class AInstaller<T>
         }
 
         fileProgressTracker?.Dispose();
+
+        // Run the manual download protocol if any archives require it
+        var allManual = manualStateArchives.Concat(nexusManualFailures).ToList();
+        if (allManual.Count > 0)
+        {
+            await RunManualDownloadProtocol(allManual, token);
+            // Count manual archives as processed now that the protocol has completed
+            foreach (var _ in allManual) UpdateProgress(1);
+        }
     }
+
+    private async Task RunManualDownloadProtocol(List<Archive> manualArchives, CancellationToken token)
+    {
+        int totalRequired = manualArchives.Count;
+        var remaining = new List<Archive>(manualArchives);
+        int loopIteration = 1;
+
+        while (remaining.Count > 0 && !token.IsCancellationRequested)
+        {
+            int batchTotal = remaining.Count;
+            int index = 1;
+            foreach (var archive in remaining)
+            {
+                var evt = new Dictionary<string, object?>
+                {
+                    ["event"] = "manual_download_required",
+                    ["file_name"] = archive.Name,
+                    ["nexus_url"] = GetManualDownloadUrl(archive),
+                    ["expected_hash"] = archive.Hash.ToHex(),
+                    ["expected_size"] = archive.Size,
+                    ["mod_name"] = GetManualModName(archive),
+                    ["mod_id"] = GetManualModId(archive),
+                    ["file_id"] = GetManualFileId(archive),
+                    ["index"] = index++,
+                    ["total"] = batchTotal
+                };
+                Console.WriteLine(JsonSerializer.Serialize(evt));
+            }
+
+            Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["event"] = "manual_download_list_complete",
+                ["total"] = batchTotal,
+                ["loop_iteration"] = loopIteration
+            }));
+            Console.Out.Flush();
+
+            // Block until Jackify signals that files have been placed in the downloads dir
+            Console.ReadLine();
+
+            await RescanForManualArchives(remaining, token);
+
+            remaining = remaining.Where(a => !HashedArchives.ContainsKey(a.Hash)).ToList();
+            loopIteration++;
+        }
+
+        if (!token.IsCancellationRequested)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["event"] = "manual_download_phase_complete",
+                ["total_required"] = totalRequired,
+                ["total_found"] = totalRequired - remaining.Count
+            }));
+            Console.Out.Flush();
+        }
+    }
+
+    private async Task RescanForManualArchives(List<Archive> archives, CancellationToken token)
+    {
+        var sizeToArchives = archives.GroupBy(a => a.Size)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var candidates = _configuration.Downloads.EnumerateFiles()
+            .Where(f => sizeToArchives.ContainsKey(f.Size()))
+            .ToList();
+
+        foreach (var file in candidates)
+        {
+            if (token.IsCancellationRequested) break;
+            var size = file.Size();
+            if (!sizeToArchives.TryGetValue(size, out var expected)) continue;
+            Hash hash;
+            try { hash = await FileHashCache.FileHashCachedAsync(file, token); }
+            catch { continue; }
+            foreach (var archive in expected)
+            {
+                if (hash == archive.Hash)
+                {
+                    lock (HashedArchives) HashedArchives[hash] = file;
+                    break;
+                }
+            }
+        }
+    }
+
+    private string GetManualDownloadUrl(Archive archive) => archive.State switch
+    {
+        DTOs.DownloadStates.Manual manual => manual.Url?.ToString() ?? "",
+        DTOs.DownloadStates.Nexus nexus =>
+            $"https://www.nexusmods.com/{nexus.Game.MetaData().NexusName}/mods/{nexus.ModID}?tab=files",
+        _ => ""
+    };
+
+    private string GetManualModName(Archive archive) => archive.State switch
+    {
+        DTOs.DownloadStates.Nexus nexus => nexus.Name ?? archive.Name,
+        _ => archive.Name
+    };
+
+    private long GetManualModId(Archive archive) =>
+        archive.State is DTOs.DownloadStates.Nexus n ? n.ModID : 0L;
+
+    private long GetManualFileId(Archive archive) =>
+        archive.State is DTOs.DownloadStates.Nexus n ? n.FileID : 0L;
 
     private string GetModInfoFromArchive(Archive archive)
     {
@@ -1051,11 +1159,6 @@ public abstract class AInstaller<T>
         catch (NotImplementedException) when (archive.State is GameFileSource)
         {
             _logger.LogError("Missing game file {name}. This could be caused by missing DLC or a modified installation.", archive.Name);
-        }
-        catch (ManualDownloadRequiredException)
-        {
-            // Manual downloads are handled by the intervention handler, not here
-            // Don't log this as an error since it's expected behavior
         }
         catch (Exception ex)
         {

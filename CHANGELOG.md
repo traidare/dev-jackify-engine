@@ -3,6 +3,15 @@
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
 ## Version 0.5.0 - TBD
+### New Features
+* **Manual download protocol**: Engine now communicates with Jackify GUI via a structured JSON stdin/stdout protocol for non-premium users and explicitly-manual archives.
+  - Emits `manual_download_required` JSON events to stdout (one per missing file) with `file_name`, `nexus_url`, `expected_hash`, `expected_size`, `mod_name`, `mod_id`, `file_id`, `index`, `total`
+  - Emits `manual_download_list_complete` and blocks on stdin waiting for `{"command":"continue"}`
+  - On receipt of continue: rescans downloads directory, re-emits any still-missing files (incrementing `loop_iteration`), repeats until all found
+  - Emits `manual_download_phase_complete` and continues installation normally once all files are present
+  - Replaces the old unstructured log output and install-halting behavior for manual downloads
+* **Non-premium Nexus hang fixed**: `NexusDownloader.DownloadManually()` previously blocked forever awaiting a browser download task that CLI mode never resolved. It now throws `ManualDownloadRequiredException` immediately, routing through the protocol instead.
+* **Cleaner premium warnings**: Removed the ASCII-art box warnings for non-premium Nexus (Jackify GUI now handles UX for this case).
 
 ## Version 0.4.8 - 2026-02-17
 ### Improvements
