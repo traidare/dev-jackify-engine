@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using System.Collections.Generic;
 using Wabbajack.CLI.Builder;
 using Wabbajack.Common;
 using Wabbajack.Downloaders;
@@ -88,12 +89,20 @@ public class Install
             _logger.LogError("The .wabbajack file is incomplete or corrupted. This usually means the download was interrupted.");
             _logger.LogError("Please delete the file and try again: {Path}", wabbajack);
             _logger.LogError("Error: {Error}", ex.Message);
-            return 1;
+            StructuredError.WriteError(StructuredError.ErrorType.ArchiveCorrupt,
+                "The .wabbajack file is incomplete or corrupted. This usually means the download was interrupted.",
+                new Dictionary<string, object?> { ["filename"] = wabbajack.FileName.ToString() });
+            return StructuredError.ExitCodeFor(StructuredError.ErrorType.ArchiveCorrupt);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to load .wabbajack file: {Path}", wabbajack);
-            return 1;
+            var t = ex is System.IO.FileNotFoundException
+                ? StructuredError.ErrorType.FileNotFound
+                : StructuredError.ErrorType.ArchiveCorrupt;
+            StructuredError.WriteError(t, $"Failed to load .wabbajack file: {ex.Message}",
+                new Dictionary<string, object?> { ["path"] = wabbajack.ToString() });
+            return StructuredError.ExitCodeFor(t);
         }
 
         var installer = StandardInstaller.Create(_serviceProvider, new InstallerConfiguration
@@ -142,15 +151,33 @@ public class Install
             
             _logger.LogInformation("After downloading all files, run the installation command again.");
             _logger.LogInformation("");
-            return 1; // Return error code to indicate manual downloads are needed
+            StructuredError.WriteError(StructuredError.ErrorType.PremiumRequired,
+                $"Nexus requires manual download for {manualDownloads.Count} file(s) — Premium account needed for automated install.",
+                new Dictionary<string, object?> { ["count"] = (object?)manualDownloads.Count });
+            return StructuredError.ExitCodeFor(StructuredError.ErrorType.PremiumRequired);
         }
 
         // Handle different install results
+        int EmitAndReturn(string type, string message)
+        {
+            StructuredError.WriteError(type, message);
+            return StructuredError.ExitCodeFor(type);
+        }
+
         return result switch
         {
-            InstallResult.Succeeded => 0,  // Success
-            InstallResult.DownloadFailed => 1,  // Manual downloads needed
-            _ => 2  // Other errors
+            InstallResult.Succeeded   => 0,
+            InstallResult.Cancelled   => 1,
+            InstallResult.DownloadFailed => EmitAndReturn(StructuredError.ErrorType.NetworkError,
+                "Installation failed: one or more downloads could not be completed."),
+            InstallResult.NotEnoughSpace => EmitAndReturn(StructuredError.ErrorType.DiskFull,
+                "Installation failed: insufficient disk space on the target drive."),
+            InstallResult.GameMissing => EmitAndReturn(StructuredError.ErrorType.FileNotFound,
+                "Installation failed: the target game was not found on this system."),
+            InstallResult.GameInvalid => EmitAndReturn(StructuredError.ErrorType.ValidationFailed,
+                "Installation failed: the game installation is invalid or corrupted."),
+            _ => EmitAndReturn(StructuredError.ErrorType.EngineError,
+                $"Installation failed with unexpected result: {result}."),
         };
     }
 
@@ -163,6 +190,9 @@ public class Install
         if (list == null)
         {
             _logger.LogInformation("Couldn't find list {MachineUrl}", machineUrl);
+            StructuredError.WriteError(StructuredError.ErrorType.FileNotFound,
+                $"Modlist '{machineUrl}' was not found in the modlist index.",
+                new Dictionary<string, object?> { ["machine_url"] = machineUrl });
             return false;
         }
         
@@ -305,6 +335,9 @@ public class Install
             catch (System.IO.InvalidDataException ex)
             {
                 _logger.LogError("Downloaded file is corrupted or incomplete (invalid ZIP). Deleting incomplete file. Error: {Error}", ex.Message);
+                StructuredError.WriteError(StructuredError.ErrorType.ArchiveCorrupt,
+                    "Downloaded .wabbajack file is corrupted or incomplete.",
+                    new Dictionary<string, object?> { ["filename"] = wabbajack.FileName.ToString() });
                 try
                 {
                     wabbajack.Delete();
@@ -315,6 +348,9 @@ public class Install
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to validate downloaded file as ZIP");
+                StructuredError.WriteError(StructuredError.ErrorType.EngineError,
+                    $"Failed to validate downloaded .wabbajack file: {ex.Message}",
+                    new Dictionary<string, object?> { ["filename"] = wabbajack.FileName.ToString() });
                 return false;
             }
         }
@@ -326,6 +362,22 @@ public class Install
         catch (Exception ex)
         {
             _logger.LogError(ex, "Download failed with exception");
+            var dlErrType = ex switch
+            {
+                System.Net.Http.HttpRequestException h when
+                    h.Message.Contains("401") || h.Message.Contains("403") ||
+                    h.Message.Contains("Unauthorized") || h.Message.Contains("Forbidden")
+                    => StructuredError.ErrorType.AuthFailed,
+                System.Net.Http.HttpRequestException
+                    => StructuredError.ErrorType.NetworkError,
+                System.IO.IOException io when io.Message.Contains("ENOSPC") || io.Message.Contains("No space left")
+                    => StructuredError.ErrorType.DiskFull,
+                UnauthorizedAccessException
+                    => StructuredError.ErrorType.PermissionDenied,
+                _ => StructuredError.ErrorType.NetworkError,
+            };
+            StructuredError.WriteError(dlErrType, $"Download failed: {ex.Message}",
+                new Dictionary<string, object?> { ["filename"] = archive.Name });
             return false;
         }
         finally

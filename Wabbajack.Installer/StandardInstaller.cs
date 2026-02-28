@@ -29,6 +29,7 @@ using Wabbajack.DTOs.JsonConverters;
 using Wabbajack.Hashing.PHash;
 using Wabbajack.Hashing.xxHash64;
 using Wabbajack.Installer.Utilities;
+using Wabbajack.Networking.Http.Interfaces;
 using Wabbajack.Networking.WabbajackClientApi;
 using Wabbajack.Paths;
 using Wabbajack.Paths.IO;
@@ -44,9 +45,10 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         InstallerConfiguration config,
         IGameLocator gameLocator, FileExtractor.FileExtractor extractor,
         DTOSerializer jsonSerializer, Context vfs, FileHashCache fileHashCache,
-        DownloadDispatcher downloadDispatcher, ParallelOptions parallelOptions, IResource<IInstaller> limiter, Client wjClient, IImageLoader imageLoader, IServiceProvider serviceProvider) :
+        DownloadDispatcher downloadDispatcher, ParallelOptions parallelOptions, IResource<IInstaller> limiter, Client wjClient, IImageLoader imageLoader, IServiceProvider serviceProvider,
+        ITransferMetrics transferMetrics) :
         base(logger, config, gameLocator, extractor, jsonSerializer, vfs, fileHashCache, downloadDispatcher,
-            parallelOptions, limiter, wjClient, imageLoader, serviceProvider)
+            parallelOptions, limiter, wjClient, imageLoader, serviceProvider, transferMetrics)
     {
         MaxSteps = 15;
     }
@@ -69,7 +71,8 @@ public class StandardInstaller : AInstaller<StandardInstaller>
             provider.GetRequiredService<IResource<IInstaller>>(),
             provider.GetRequiredService<Client>(),
             texConvImageLoader,
-            provider);
+            provider,
+            provider.GetRequiredService<ITransferMetrics>());
     }
 
     public override async Task<InstallResult> Begin(CancellationToken token)
@@ -79,10 +82,10 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         // Start the installation stopwatch
         _installationStopWatch.Start();
         
-        _logger.LogInformation("{Duration} Installing: {Name} - {Version}", ConsoleOutput.GetDurationTimestamp(), _configuration.ModList.Name, _configuration.ModList.Version);
+        _logger.LogInformation("Installing: {Name} - {Version}", _configuration.ModList.Name, _configuration.ModList.Version);
         await _wjClient.SendMetric(MetricNames.BeginInstall, ModList.Name);
         NextStep(Consts.StepPreparing, "Configuring Installer", 0);
-        _logger.LogInformation("{Duration} Configuring Processor", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Configuring Processor");
 
         if (_configuration.GameFolder == default)
             _configuration.GameFolder = _gameLocator.GameLocation(_configuration.Game);
@@ -114,10 +117,10 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         }
 
 
-        _logger.LogInformation("{Duration} Install Folder: {InstallFolder}", ConsoleOutput.GetDurationTimestamp(), _configuration.Install);
-        _logger.LogInformation("{Duration} Downloads Folder: {DownloadFolder}", ConsoleOutput.GetDurationTimestamp(), _configuration.Downloads);
-        _logger.LogInformation("{Duration} Game Folder: {GameFolder}", ConsoleOutput.GetDurationTimestamp(), _configuration.GameFolder);
-        _logger.LogInformation("{Duration} Engine Folder: {WabbajackFolder}", ConsoleOutput.GetDurationTimestamp(), KnownFolders.EntryPoint);
+        _logger.LogInformation("Install Folder: {InstallFolder}", _configuration.Install);
+        _logger.LogInformation("Downloads Folder: {DownloadFolder}", _configuration.Downloads);
+        _logger.LogInformation("Game Folder: {GameFolder}", _configuration.GameFolder);
+        _logger.LogInformation("Engine Folder: {WabbajackFolder}", KnownFolders.EntryPoint);
 
         _configuration.Install.CreateDirectory();
         _configuration.Downloads.CreateDirectory();
@@ -236,7 +239,6 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
         NextStep(Consts.StepFinished, "Finished", 1);
         _logger.LogInformation("Finished Modlist Installation");
-        Console.WriteLine(); // Add newline after progress line
         return InstallResult.Succeeded;
     }
 
@@ -309,14 +311,14 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
     private async Task WriteMetaFiles(CancellationToken token)
     {
-        _logger.LogInformation("{Duration} Looking for downloads by size", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Looking for downloads by size");
         var bySize = UnoptimizedArchives.ToLookup(x => x.Size);
 
         var downloadFiles = _configuration.Downloads.EnumerateFiles()
             .Where(download => download.Extension != Ext.Meta)
             .ToArray();
 
-        _logger.LogInformation("{Duration} Writing Metas ({Count} files)", ConsoleOutput.GetDurationTimestamp(), downloadFiles.Length);
+        _logger.LogInformation("Writing Metas ({Count} files)", downloadFiles.Length);
 
         var totalFiles = downloadFiles.Length;
         var completedCount = 0;
@@ -436,9 +438,7 @@ public class StandardInstaller : AInstaller<StandardInstaller>
                 }
             });
 
-        // Final completion message
-        Console.WriteLine(); // Newline after progress
-        _logger.LogInformation("{Duration} Completed writing {count}/{total} meta files", ConsoleOutput.GetDurationTimestamp(), completedCount, totalFiles);
+        _logger.LogInformation("Completed writing {count}/{total} meta files", completedCount, totalFiles);
     }
 
     private static IEnumerable<string> AddInstalled(IEnumerable<string> getMetaIni)
@@ -511,9 +511,9 @@ public class StandardInstaller : AInstaller<StandardInstaller>
     private async Task BuildBSAs(CancellationToken token)
     {
         var bsas = ModList.Directives.OfType<CreateBSA>().ToList();
-        _logger.LogInformation("{Duration} Generating debug caches", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Generating debug caches");
         var indexedByDestination = UnoptimizedDirectives.ToDictionary(d => d.To);
-        _logger.LogInformation("{Duration} Building {bsasCount} bsa files", ConsoleOutput.GetDurationTimestamp(), bsas.Count);
+        _logger.LogInformation("Building {bsasCount} bsa files", bsas.Count);
         NextStep("Installing", "Building BSAs", bsas.Count);
 
         using var fileProgressTracker = new FileProgressTracker();
@@ -734,11 +734,7 @@ public class StandardInstaller : AInstaller<StandardInstaller>
 
     private async Task InstallIncludedFiles(CancellationToken token)
     {
-        // Add newline to ensure this appears on its own line after progress
-        Console.WriteLine();
-        _logger.LogInformation("{Duration} Writing inline files", ConsoleOutput.GetDurationTimestamp());
-        // Add newline before section header for proper separation
-        Console.WriteLine();
+        _logger.LogInformation("Writing inline files");
         NextStep(Consts.StepInstalling, "Installing Included Files", ModList.Directives.OfType<InlineFile>().Count());
         await ModList.Directives
             .OfType<InlineFile>()

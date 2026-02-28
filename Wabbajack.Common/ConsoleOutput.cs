@@ -4,45 +4,24 @@ namespace Wabbajack.Common;
 
 public static class ConsoleOutput
 {
-    private static readonly DateTime _startTime = DateTime.UtcNow;
-    
     /// <summary>
-    /// Controls whether FILE_PROGRESS lines are output.
-    /// Default is false (suppressed) - set to true via --show-file-progress flag.
-    /// Jackify GUI should always pass --show-file-progress to enable detailed file progress.
+    /// When true, [FILE_PROGRESS] tagged lines are emitted to stdout.
+    /// Set by --show-file-progress flag in Program.Main before verb dispatch.
     /// </summary>
     public static bool ShowFileProgress { get; set; } = false;
 
     /// <summary>
-    /// Prints a message with a duration timestamp (elapsed time since program start)
-    /// Format: [HH:MM:SS] message
+    /// Prints a message to stdout.
     /// </summary>
     public static void PrintWithDuration(string message)
     {
-        var elapsed = DateTime.UtcNow - _startTime;
-        Console.WriteLine($"[{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}] {message}");
+        Console.WriteLine(message);
     }
 
     public static void PrintProgressWithDuration(string message)
     {
-        var elapsed = DateTime.UtcNow - _startTime;
-        var timestamped = $"[{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}] {message}";
-        
-        try
-        {
-            // Clear the current line and write the progress message (uses \r to overwrite same line)
-            Console.Write($"\r\x1b[K{timestamped}");
-            Console.Out.Flush();
-        }
-        catch
-        {
-            // Fallback if ANSI escape codes aren't supported
-            // Pad with spaces to clear the line, then return to start with \r
-            var windowWidth = 120; // Default fallback width
-            try { windowWidth = Console.WindowWidth; } catch { }
-            Console.Write($"\r{timestamped.PadRight(windowWidth)}");
-            Console.Out.Flush();
-        }
+        Console.Write(message + "\r");
+        Console.Out.Flush();
     }
 
     /// <summary>
@@ -65,20 +44,15 @@ public static class ConsoleOutput
     }
 
     /// <summary>
-    /// Gets the current duration timestamp as a string
-    /// Format: [HH:MM:SS]
+    /// Returns empty string. Kept for call-site compatibility; callers should be cleaned up.
     /// </summary>
-    public static string GetDurationTimestamp()
-    {
-        var elapsed = DateTime.UtcNow - _startTime;
-        return $"[{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}]";
-    }
+    [Obsolete("Timestamp prefix removed - do not use")]
+    public static string GetDurationTimestamp() => "";
 
     /// <summary>
     /// Prints individual file progress in the format expected by Jackify GUI parser.
     /// Format: [FILE_PROGRESS] Operation: filename (percent%) [speed] (completed/total)
-    /// Outputs to stderr to keep it separate from normal stdout.
-    /// Uses \r for all progress updates (overwrites same line) to prevent console spam.
+    /// Outputs to stdout with a newline so Jackify's line-by-line capture sees each line.
     /// Only outputs if ShowFileProgress is true (enabled via --show-file-progress flag).
     /// </summary>
     public static void PrintFileProgress(string operation, string filename, double percent, string speed, int? completed = null, int? total = null)
@@ -99,8 +73,8 @@ public static class ConsoleOutput
         
         var message = $"[FILE_PROGRESS] {operation}: {filename} ({percentStr}%){speedPart}{counterPart}";
         
-        // Use \r for ALL progress updates (including Completed) to overwrite same line and prevent console spam
-        Console.Error.Write($"\r{message}");
-        Console.Error.Flush();
+        // Write to stdout with newline so Jackify's line-by-line capture sees each FILE_PROGRESS line
+        Console.Out.WriteLine(message);
+        Console.Out.Flush();
     }
 }

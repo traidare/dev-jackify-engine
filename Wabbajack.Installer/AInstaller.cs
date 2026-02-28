@@ -22,6 +22,7 @@ using Wabbajack.FileExtractor.ExtractedFiles;
 using Wabbajack.Hashing.PHash;
 using Wabbajack.Hashing.xxHash64;
 using Wabbajack.Installer.Utilities;
+using Wabbajack.Networking.Http.Interfaces;
 using Wabbajack.Networking.WabbajackClientApi;
 using Wabbajack.Paths;
 using Wabbajack.Paths.IO;
@@ -70,6 +71,7 @@ public abstract class AInstaller<T>
     public Action<StatusUpdate>? OnStatusUpdate;
     protected readonly IResource<IInstaller> _limiter;
     protected readonly IServiceProvider _serviceProvider;
+    private readonly ITransferMetrics _transferMetrics;
     private Func<long, string> _statusFormatter = x => x.ToString();
 
 
@@ -81,10 +83,12 @@ public abstract class AInstaller<T>
         IResource<IInstaller> limiter,
         Client wjClient,
         IImageLoader imageLoader,
-        IServiceProvider serviceProvider)
+        IServiceProvider serviceProvider,
+        ITransferMetrics transferMetrics)
     {
         _limiter = limiter;
         _serviceProvider = serviceProvider;
+        _transferMetrics = transferMetrics;
         _manager = new TemporaryFileManager(config.Install.Combine("__temp__"));
         ExtractedModlistFolder = _manager.CreateFolder();
         _configuration = config;
@@ -122,13 +126,6 @@ public abstract class AInstaller<T>
         _statusText = statusText;
         _statusCategory = statusCategory;
         _statusFormatter = formatter ?? (x => x.ToString());
-        
-        // Add blank line before section header for better visual separation
-        // Only add blank line for major sections, not for sub-sections like "Installing Included Files"
-        if (!statusText.Contains("Included Files") && !statusText.Contains("BSAs"))
-        {
-            Console.WriteLine();
-        }
         
         // Format: === Configuring Installer ===
         var sectionHeader = $"=== {statusText} ===";
@@ -170,11 +167,11 @@ public abstract class AInstaller<T>
             {
                 try
                 {
-                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
-                    
+                    await Task.Delay(250, displayCts.Token); // Update every 250ms
+
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
-                    
+
                     // Read current processed count (may be slightly stale, but fine for progress display)
                     var currentProcessed = processedEntries;
                     
@@ -376,7 +373,7 @@ public abstract class AInstaller<T>
     public Task BuildFolderStructure()
     {
         NextStep(Consts.StepPreparing, "Building Folder Structure", 0);
-        _logger.LogInformation("{Duration} Building Folder Structure", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Building Folder Structure");
         ModList.Directives
             .Where(d => d.To.Depth > 1)
             .Select(d => _configuration.Install.Combine(d.To.Parent))
@@ -396,8 +393,8 @@ public abstract class AInstaller<T>
         var totalTextures = textureDirectives.Count;
         
         // Print starting installation message
-        _logger.LogInformation("{Duration} Starting installation: {TotalFiles} files to process, {TotalTextures} textures to recompress",
-            ConsoleOutput.GetDurationTimestamp(), totalFiles, totalTextures);
+        _logger.LogInformation("Starting installation: {TotalFiles} files to process, {TotalTextures} textures to recompress",
+            totalFiles, totalTextures);
         
         // Progress tracking variables
         long processedFiles = 0;
@@ -411,21 +408,22 @@ public abstract class AInstaller<T>
         
         // Display task for installation progress
         var displayCts = new CancellationTokenSource();
+        var lastHeartbeat = DateTime.UtcNow;
         var displayTask = Task.Run(async () =>
         {
             while (!displayCts.Token.IsCancellationRequested)
             {
                 try
                 {
-                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
-                    
+                    await Task.Delay(250, displayCts.Token); // Update every 250ms
+
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
-                    
+
                     // Read current processed counts (may be slightly stale, but fine for progress display)
                     var currentProcessedFiles = (int)Interlocked.Read(ref processedFiles);
                     var currentProcessedTextures = (int)Interlocked.Read(ref processedTextures);
-                    
+
                     // Print overall progress counter (single line that updates in place with \r)
                     var currentProcessedSize = Interlocked.Read(ref processedSize);
                     var processedSizeMB = currentProcessedSize / 1024.0 / 1024.0;
@@ -449,7 +447,14 @@ public abstract class AInstaller<T>
                     }
                     var overallProgressMessage = $"Installing files {currentProcessedFiles}/{totalFiles} ({processedSizeStr}/{totalSizeStr}) - Converting textures: {currentProcessedTextures}/{totalTextures}";
                     ConsoleOutput.PrintProgressWithDuration(overallProgressMessage);
-                    
+
+                    // Periodic heartbeat to stderr for log capture (does not duplicate stdout progress line)
+                    if ((now - lastHeartbeat).TotalSeconds >= 5)
+                    {
+                        Console.Error.WriteLine(overallProgressMessage);
+                        lastHeartbeat = now;
+                    }
+
                     foreach (var (filename, progress) in activeFiles)
                     {
                         var shouldOutput = progress.IsCompleted || 
@@ -726,7 +731,7 @@ public abstract class AInstaller<T>
     public async Task DownloadArchives(CancellationToken token)
     {
         var missing = ModList.Archives.Where(a => !HashedArchives.ContainsKey(a.Hash)).ToList();
-        _logger.LogInformation("{Duration} Missing {count} archives", ConsoleOutput.GetDurationTimestamp(), missing.Count);
+        _logger.LogInformation("Missing {count} archives", missing.Count);
 
         var dispatchers = missing.Select(m => _downloadDispatcher.Downloader(m))
             .Distinct()
@@ -734,11 +739,11 @@ public abstract class AInstaller<T>
 
         await Task.WhenAll(dispatchers.Select(d => d.Prepare()));
 
-        _logger.LogInformation("{Duration} Downloading validation data", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Downloading validation data");
         var validationData = await _wjClient.LoadDownloadAllowList();
         var mirrors = (await _wjClient.LoadMirrors()).ToLookup(m => m.Hash);
 
-        _logger.LogInformation("{Duration} Validating Archives", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Validating Archives");
 
         foreach (var archive in missing)
         {
@@ -759,13 +764,13 @@ public abstract class AInstaller<T>
             return;
         }
 
-        _logger.LogInformation("{Duration} Downloading missing archives", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Downloading missing archives");
         await DownloadMissingArchives(missing, token);
     }
 
     public async Task DownloadMissingArchives(List<Archive> missing, CancellationToken token, bool download = true)
     {
-        _logger.LogInformation("{Duration} Downloading {Count} archives", ConsoleOutput.GetDurationTimestamp(), missing.Count.ToString());
+        _logger.LogInformation("Downloading {Count} archives", missing.Count);
         NextStep(Consts.StepDownloading, "Downloading files", missing.Count);
 
         missing = await missing
@@ -783,21 +788,20 @@ public abstract class AInstaller<T>
             }
         }
 
-        var nonManualCount = missing.Count(a => a.State is not Manual);
+        var nonManualArchives = missing.Where(a => a.State is not Manual).ToList();
+        var nonManualCount = nonManualArchives.Count;
+        var totalDownloadBytes = nonManualArchives.Sum(a => a.Size);
 
-        // Only setup bandwidth monitoring and progress display if there are automated downloads
-        BandwidthMonitor? bandwidthMonitor = null;
+        // Only setup progress display if there are automated downloads
         CancellationTokenSource? displayCts = null;
         Task? displayTask = null;
         FileProgressTracker? fileProgressTracker = null;
         var completedCount = 0;
+        long completedBytes = 0;
         var lastFileProgressOutput = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>();
 
         if (nonManualCount > 0)
         {
-            // Professional bandwidth monitoring setup
-            bandwidthMonitor = new BandwidthMonitor(sampleWindowSeconds: 5); // 5-second rolling window
-            
             // File progress tracking for individual file progress output
             fileProgressTracker = new FileProgressTracker();
 
@@ -809,17 +813,28 @@ public abstract class AInstaller<T>
                 {
                     try
                     {
-                        await Task.Delay(1000, displayCts.Token); // Update every 1 second
+                        await Task.Delay(250, displayCts.Token); // Update every 250ms
 
-                        var currentBandwidthMBps = bandwidthMonitor.GetCurrentBandwidthMBps();
+                        var currentBandwidthMBps = _transferMetrics.BytesPerSecondSmoothed / (1024.0 * 1024.0);
                         var currentCompleted = Interlocked.CompareExchange(ref completedCount, 0, 0);
+                        var currentCompletedBytes = Interlocked.Read(ref completedBytes);
 
-                        ConsoleOutput.PrintProgressWithDuration($"Downloading Mod Archives ({currentCompleted}/{nonManualCount}) - {currentBandwidthMBps:F1}MB/s");
-                        
+                        // Also subtract bytes already received for in-progress downloads so the
+                        // remaining value decreases continuously, not just when an archive finishes.
+                        var activeFiles = fileProgressTracker?.GetActiveFiles();
+                        long inProgressBytes = 0;
+                        if (activeFiles != null)
+                            foreach (var (_, p) in activeFiles)
+                                if (!p.IsCompleted) inProgressBytes += p.CurrentBytes;
+
+                        var remainingBytes = Math.Max(0, totalDownloadBytes - currentCompletedBytes - inProgressBytes);
+                        var remainingGB = remainingBytes / (1024.0 * 1024.0 * 1024.0);
+
+                        ConsoleOutput.PrintProgressWithDuration($"Downloading Mod Archives ({currentCompleted}/{nonManualCount}) - {currentBandwidthMBps:F1}MB/s - {remainingGB:F1}GB remaining");
+
                         // Output individual file progress for all active files (with throttling)
-                        if (fileProgressTracker != null)
+                        if (activeFiles != null)
                         {
-                            var activeFiles = fileProgressTracker.GetActiveFiles();
                             var now = DateTime.UtcNow;
                             
                             foreach (var (filename, progress) in activeFiles)
@@ -869,8 +884,9 @@ public abstract class AInstaller<T>
                     // Download using standard method with file progress tracking
                     var hash = await _downloadDispatcher.Download(archive, outputPath, token, null, fileProgressTracker);
                     
-                    // Update completed count
+                    // Update completed count and bytes
                     Interlocked.Increment(ref completedCount);
+                    Interlocked.Add(ref completedBytes, archive.Size);
                     UpdateProgress(1);
                 }
                 catch (Exception ex)
@@ -911,7 +927,6 @@ public abstract class AInstaller<T>
             ConsoleOutput.ClearProgressLine();
         }
 
-        bandwidthMonitor?.Dispose();
         fileProgressTracker?.Dispose();
     }
 
@@ -1053,7 +1068,7 @@ public abstract class AInstaller<T>
     public async Task HashArchives(CancellationToken token)
     {
         NextStep(Consts.StepHashing, "Hashing Archives", 0);
-        _logger.LogInformation("{Duration} Looking for files to hash", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Looking for files to hash");
 
         // Collect all game folders – primary plus other games
         var gameFolders = new HashSet<AbsolutePath>();
@@ -1069,7 +1084,7 @@ public abstract class AInstaller<T>
         // OtherGames should only be non-null if the compiled list specifically named othergames
         foreach (var g in _configuration.OtherGames ?? Array.Empty<Game>())
         {
-            _logger.LogInformation("{Duration} Also searching othergame folder for {Game}", ConsoleOutput.GetDurationTimestamp(), g);
+            _logger.LogInformation("Also searching othergame folder for {Game}", g);
             AddIfValid(_gameLocator.GameLocation(g));
         }
 
@@ -1078,12 +1093,12 @@ public abstract class AInstaller<T>
             .Concat(gameFolders.SelectMany(p => p.EnumerateFiles()))
             .ToList();
 
-        _logger.LogInformation("{Duration} Getting archive sizes", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Getting archive sizes");
         var hashDict = (await allFiles.PMapAllBatched(_limiter, x => (x, x.Size())).ToList())
             .GroupBy(f => f.Item2)
             .ToDictionary(g => g.Key, g => g.Select(v => v.x));
 
-        _logger.LogInformation("{Duration} Linking archives to downloads", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Linking archives to downloads");
         // Only hash files that exactly match expected size - exclude partial downloads
         var toHash = ModList.Archives.Where(a => hashDict.ContainsKey(a.Size))
             .SelectMany(a => hashDict[a.Size].Where(f => f.Size() == a.Size)) // Only files with exact size match
@@ -1093,7 +1108,7 @@ public abstract class AInstaller<T>
         var missingArchives = ModList.Archives.Where(a => !hashDict.ContainsKey(a.Size)).ToList();
         if (missingArchives.Any())
         {
-            _logger.LogDebug("{Duration} {count} archives not found by size match:", ConsoleOutput.GetDurationTimestamp(), missingArchives.Count);
+            _logger.LogDebug("{count} archives not found by size match:", missingArchives.Count);
             foreach (var missing in missingArchives.Take(10))
             {
                 _logger.LogDebug("  - {name} (hash: {hash}, size: {size}, state: {state})",
@@ -1106,8 +1121,7 @@ public abstract class AInstaller<T>
         }
 
         NextStep(Consts.StepPreparing, "Hashing downloads", toHash.Count);
-        _logger.LogInformation("{Duration} Found {count} total files, {hashedCount} matching filesize", ConsoleOutput.GetDurationTimestamp(), allFiles.Count,
-            toHash.Count);
+        _logger.LogInformation("Found {count} total files, {hashedCount} matching filesize", allFiles.Count, toHash.Count);
 
         // Track validation progress for individual file progress output
         using var fileProgressTracker = new FileProgressTracker();
@@ -1121,15 +1135,15 @@ public abstract class AInstaller<T>
             {
                 try
                 {
-                    await Task.Delay(1000, displayCts.Token); // Update every 1 second
-                    
+                    await Task.Delay(250, displayCts.Token); // Update every 250ms
+
                     var activeFiles = fileProgressTracker.GetActiveFiles();
                     var now = DateTime.UtcNow;
-                    
+
                     foreach (var (filename, progress) in activeFiles)
                     {
-                        var shouldOutput = progress.IsCompleted || 
-                            !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) || 
+                        var shouldOutput = progress.IsCompleted ||
+                            !lastFileProgressOutput.TryGetValue(filename, out var lastOutput) ||
                             (now - lastOutput).TotalMilliseconds >= 200;
                         
                         if (shouldOutput)
@@ -1198,7 +1212,7 @@ public abstract class AInstaller<T>
     /// </summary>
     protected async Task OptimizeModlist(CancellationToken token)
     {
-        _logger.LogInformation("{Duration} Optimizing ModList directives", ConsoleOutput.GetDurationTimestamp());
+        _logger.LogInformation("Optimizing ModList directives");
         UnoptimizedArchives = ModList.Archives;
         UnoptimizedDirectives = ModList.Directives;
         
@@ -1325,7 +1339,7 @@ public abstract class AInstaller<T>
             });
 
         NextStep(Consts.StepPreparing, "Updating ModList", 0);
-        _logger.LogInformation("{Duration} Optimized {From} directives to {To} required", ConsoleOutput.GetDurationTimestamp(), ModList.Directives.Length, indexed.Count);
+        _logger.LogInformation("Optimized {From} directives to {To} required", ModList.Directives.Length, indexed.Count);
         var requiredArchives = indexed.Values.OfType<FromArchive>()
             .GroupBy(d => d.ArchiveHashPath.Hash)
             .Select(d => d.Key)

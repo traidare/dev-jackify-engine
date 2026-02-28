@@ -281,6 +281,23 @@ namespace Wabbajack.Hashing.PHash
             // Create the prefix directory
             _currentPrefix.CreateDirectory();
 
+            // GE-Proton (and other builds using ProtonFixes) expect ~/.config/protonfixes to exist;
+            // if it is missing, ProtonFixes aborts and can cause non-zero exit when running texconv/7z.
+            // Creating it here is harmless for Valve Proton (it does not use ProtonFixes).
+            var home = Environment.GetEnvironmentVariable("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrEmpty(home))
+            {
+                var protonFixesDir = Path.Combine(home, ".config", "protonfixes");
+                try
+                {
+                    Directory.CreateDirectory(protonFixesDir);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not ensure ProtonFixes config dir exists at {Path}", protonFixesDir);
+                }
+            }
+
             // Get Proton wrapper path using the detector
             var protonWrapperPath = await _protonDetector.GetProtonWrapperPathAsync();
             if (protonWrapperPath == null)

@@ -70,9 +70,15 @@ public class NexusApi
             {
                 var msg = await GenerateMessage(HttpMethod.Get, Endpoints.OAuthValidate);
                 var (data, header) = await Send<OAuthUserInfo>(msg, token);
+                var roles = data.MembershipRoles ?? Array.Empty<string>();
+                var isPremium = roles.Contains("premium");
+                _logger.LogDebug("Nexus userinfo: user={Name} membership_roles=[{Roles}] IsPremium={IsPremium}",
+                    data.Name, string.Join(", ", roles), isPremium);
+                if (!isPremium && roles.Length > 0)
+                    _logger.LogInformation("Nexus account has roles [{Roles}] but not 'premium' — account may not have active Premium", string.Join(", ", roles));
                 var validateInfo = new ValidateInfo
                 {
-                    IsPremium = (data.MembershipRoles ?? Array.Empty<string>()).Contains("premium"),
+                    IsPremium = isPremium,
                     Name = data.Name,
                 };
                 _lastValidatedInfo = (validateInfo, header);
@@ -80,10 +86,10 @@ public class NexusApi
             }
             catch (HttpException ex) when (ex.Code == (int)HttpStatusCode.Unauthorized || ex.Code == (int)HttpStatusCode.Forbidden)
             {
-                // Fix: Cache the failure to prevent infinite retry loop when token is invalid/expired
+                // Cache the failure to prevent tight retry loops when token is invalid/expired
                 _lastValidatedInfo = (new ValidateInfo { IsPremium = false, Name = "" }, new ResponseMetadata());
-                _lastValidated = DateTime.Now - TimeSpan.FromMinutes(4); // Expires in 1 minute (5 min cache - 4 min = 1 min)
-                throw; // Re-throw to let caller know validation failed
+                _lastValidated = DateTime.Now - TimeSpan.FromMinutes(4); // expires in 1 min
+                throw;
             }
         }
 
@@ -310,13 +316,19 @@ public class NexusApi
                     }
                     catch (Exception refreshEx)
                     {
-                        _logger.LogError(refreshEx, "OAuth token refresh failed: {ErrorMessage}. OAuth authentication will fail.", refreshEx.Message);
-                        throw; // Don't fall back - user chose OAuth, so respect that choice
+                        // Refresh of the stored encrypted token failed (e.g. token revoked after user re-auth in GUI).
+                        // Delete the stale file and fall through to check NEXUS_OAUTH_INFO env var, which contains
+                        // the fresh token the GUI just passed in. Without this, a stale encrypted file permanently
+                        // blocks a freshly-authenticated session.
+                        _logger.LogWarning("Stored OAuth token refresh failed ({ErrorMessage}); deleting stale token file and falling back to env var.", refreshEx.Message);
+                        try { await AuthInfo.Delete(); } catch { /* best-effort delete */ }
+                        info = new NexusOAuthState(); // clear OAuth so we fall through below
                     }
                 }
                 
                 if (info.OAuth?.AccessToken != null)
                 {
+                    _logger.LogDebug("Using OAuth token from encrypted file");
                     // Write token status to file for GUI to read (fire and forget)
                     Task.Run(async () => await WriteTokenStatusFile(info)).ConfigureAwait(false);
                     return (false, info.OAuth.AccessToken);
@@ -325,6 +337,7 @@ public class NexusApi
             else if (!string.IsNullOrWhiteSpace(info.ApiKey))
             {
                 // User chose API key - use it (no refresh capability)
+                _logger.LogDebug("Using API key from encrypted file");
                 // Write token status to file for GUI to read (fire and forget)
                 Task.Run(async () => await WriteTokenStatusFile(info)).ConfigureAwait(false);
                 return (true, info.ApiKey);
@@ -384,6 +397,7 @@ public class NexusApi
                     
                     if (_envVarOAuthState.OAuth?.AccessToken != null)
                     {
+                        _logger.LogDebug("Using OAuth token from NEXUS_OAUTH_INFO env var");
                         // Write token status to file for GUI to read (fire and forget)
                         Task.Run(async () => await WriteTokenStatusFile(_envVarOAuthState)).ConfigureAwait(false);
                         return (false, _envVarOAuthState.OAuth.AccessToken);
