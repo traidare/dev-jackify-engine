@@ -12,6 +12,7 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
   - Replaces the old unstructured log output and install-halting behavior for manual downloads
 * **Non-premium Nexus hang fixed**: `NexusDownloader.DownloadManually()` previously blocked forever awaiting a browser download task that CLI mode never resolved. It now throws `ManualDownloadRequiredException` immediately, routing through the protocol instead.
 * **Cleaner premium warnings**: Removed the ASCII-art box warnings for non-premium Nexus (Jackify GUI now handles UX for this case).
+* **Nexus ToS compliance**: Non-premium accounts now have ALL Nexus archives routed to the manual download protocol upfront, before any download attempt. Premium status is checked once via `NexusApi.IsPremium()` at the start of the download phase; if non-premium, no Nexus CDN URL API call is ever made. The `nexus_url` in `manual_download_required` events now includes `file_id` (e.g. `?tab=files&file_id=462377`) so Jackify can open the browser directly to the correct file's download page.
 
 ## Version 0.4.8 - 2026-02-17
 ### Improvements

@@ -25,6 +25,7 @@ using Wabbajack.Hashing.PHash;
 using Wabbajack.Hashing.xxHash64;
 using Wabbajack.Installer.Utilities;
 using Wabbajack.Networking.Http.Interfaces;
+using Wabbajack.Networking.NexusApi;
 using Wabbajack.Networking.WabbajackClientApi;
 using Wabbajack.Paths;
 using Wabbajack.Paths.IO;
@@ -782,6 +783,19 @@ public abstract class AInstaller<T>
         // Collect Manual-state archives upfront — they never go through automated download
         var manualStateArchives = missing.Where(a => a.State is Manual).ToList();
         var nonManualArchives = missing.Where(a => a.State is not Manual).ToList();
+
+        // ToS compliance: if the account is non-premium, ALL Nexus archives must go through
+        // the manual download protocol. Check once upfront so we never call the CDN URL API
+        // for a non-premium account — not even a failed attempt.
+        var nexusApi = _serviceProvider.GetService<NexusApi>();
+        if (nexusApi != null && !await nexusApi.IsPremium(token))
+        {
+            _logger.LogInformation("Nexus account is non-premium — routing all Nexus archives to manual download protocol");
+            var nexusArchives = nonManualArchives.Where(a => a.State is DTOs.DownloadStates.Nexus).ToList();
+            manualStateArchives = manualStateArchives.Concat(nexusArchives).ToList();
+            nonManualArchives = nonManualArchives.Where(a => a.State is not DTOs.DownloadStates.Nexus).ToList();
+        }
+
         var nonManualCount = nonManualArchives.Count;
         var totalDownloadBytes = nonManualArchives.Sum(a => a.Size);
 
@@ -1022,7 +1036,7 @@ public abstract class AInstaller<T>
     {
         DTOs.DownloadStates.Manual manual => manual.Url?.ToString() ?? "",
         DTOs.DownloadStates.Nexus nexus =>
-            $"https://www.nexusmods.com/{nexus.Game.MetaData().NexusName}/mods/{nexus.ModID}?tab=files",
+            $"https://www.nexusmods.com/{nexus.Game.MetaData().NexusName}/mods/{nexus.ModID}?tab=files&file_id={nexus.FileID}",
         _ => ""
     };
 
