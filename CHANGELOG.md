@@ -3,6 +3,15 @@
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
 ## Version 0.5.0 - TBD
+### Bug Fixes
+* **Exception classifier**: Added `StructuredError.Classify(Exception)` — a single shared method that maps exception types to structured error types and messages (`disk_error`, `disk_full`, `permission_denied`, `network_error`, `auth_failed`, `engine_error`). All catch sites in `Install.Run`, `DownloadMachineUrl`, and `UnhandledException` now use the classifier instead of duplicated inline logic or hardcoded `engine_error` fallbacks. Adds new `disk_error` type (exit 4) for OS-level I/O read failures distinct from `disk_full`.
+* **`installer.Begin()` exceptions unhandled**: Any exception thrown during installation (I/O errors, permission denied, network failures, etc.) previously escaped to the `UnhandledException` fallback and was always reported as `engine_error` exit 6. Now caught at the call site with proper classification.
+* **`PathTooLongException` misclassified**: Previously fell through to the `IOException` → `disk_error` branch in `Classify()`, producing a misleading "failing storage device" message. Now classified as `validation_failed` (exit 5) with a message explaining the filesystem filename length limit and suggesting a non-encrypted install location.
+* **Pre-flight validation**: Three checks now run after the modlist loads but before archive downloads begin, preventing failures mid-install or post-download:
+  - **Game installed**: `IsInstalled()` checked upfront — previously `GameLocation()` threw outside the try/catch and escaped as a raw stack trace + exit 1.
+  - **Filesystem NAME_MAX**: `pathconf()` probed on the install path to detect filesystems with reduced filename length limits (e.g. eCryptFS/fscrypt encrypted home directories). Scans all modlist directive paths and fails immediately with the offending names if any exceed the limit.
+  - **Disk space**: Free space on the install drive checked against the sum of directive sizes before downloading begins.
+
 ### New Features
 * **Manual download protocol**: Engine now communicates with Jackify GUI via a structured JSON stdin/stdout protocol for non-premium users and explicitly-manual archives.
   - Emits `manual_download_required` JSON events to stdout (one per missing file) with `file_name`, `nexus_url`, `expected_hash`, `expected_size`, `mod_name`, `mod_id`, `file_id`, `index`, `total`

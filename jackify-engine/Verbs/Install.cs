@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
 using System.CommandLine;
 using System.CommandLine.Invocation;
@@ -15,7 +16,6 @@ using Wabbajack.Downloaders;
 using Wabbajack.Downloaders.GameFile;
 using Wabbajack.DTOs;
 using Wabbajack.DTOs.JsonConverters;
-using Wabbajack.DTOs.Interventions;
 using Wabbajack.Installer;
 using Wabbajack.Networking.WabbajackClientApi;
 using Wabbajack.Paths;
@@ -105,6 +105,54 @@ public class Install
             return StructuredError.ExitCodeFor(t);
         }
 
+        // --- Pre-flight validation ---
+
+        // 1. Game installed
+        if (!_gameLocator.IsInstalled(modlist.GameType))
+        {
+            _logger.LogError("Required game '{Game}' is not installed on this system", modlist.GameType);
+            StructuredError.WriteError(StructuredError.ErrorType.FileNotFound,
+                $"The game '{modlist.GameType}' required by this modlist is not installed. Install the game before running the modlist.",
+                new Dictionary<string, object?> { ["game"] = modlist.GameType.ToString() });
+            return StructuredError.ExitCodeFor(StructuredError.ErrorType.FileNotFound);
+        }
+
+        // 2. Filesystem NAME_MAX — catches encrypted home dirs (eCryptFS/fscrypt) which reduce
+        //    the effective limit to ~138 chars and would cause PathTooLongException mid-install.
+        var nameMax = GetEffectiveNameMax(output);
+        var longComponents = modlist.Directives
+            .SelectMany(d => d.To.ToString().Split('/'))
+            .Where(c => c.Length > nameMax)
+            .Distinct()
+            .OrderByDescending(c => c.Length)
+            .Take(5)
+            .ToList();
+        if (longComponents.Any())
+        {
+            var examples = string.Join("; ", longComponents.Select(c => $"'{c}' ({c.Length} chars)"));
+            _logger.LogError("Install filesystem NAME_MAX of {NameMax} chars is too small for this modlist", nameMax);
+            StructuredError.WriteError(StructuredError.ErrorType.ValidationFailed,
+                $"Your install filesystem limits filenames to {nameMax} characters, but this modlist requires longer names: {examples}. " +
+                $"This typically occurs with encrypted home directories (eCryptFS/fscrypt). " +
+                $"Install to a non-encrypted location such as /opt/{modlist.Name.Replace(" ", "")}.",
+                new Dictionary<string, object?> { ["name_max"] = nameMax, ["offending_names"] = longComponents });
+            return StructuredError.ExitCodeFor(StructuredError.ErrorType.ValidationFailed);
+        }
+
+        // 3. Disk space — rough check: installed file sizes vs free space on target drive.
+        var installSizeBytes = modlist.Directives.Sum(d => d.Size);
+        var freeBytes = GetAvailableBytesAt(output);
+        if (freeBytes > 0 && freeBytes < installSizeBytes)
+        {
+            _logger.LogError("Insufficient disk space: {Need} needed, {Free} available",
+                installSizeBytes.ToFileSizeString(), freeBytes.ToFileSizeString());
+            StructuredError.WriteError(StructuredError.ErrorType.DiskFull,
+                $"Insufficient disk space at {output}. Installation requires {installSizeBytes.ToFileSizeString()} " +
+                $"but only {freeBytes.ToFileSizeString()} is available.",
+                new Dictionary<string, object?> { ["required_bytes"] = installSizeBytes, ["available_bytes"] = freeBytes });
+            return StructuredError.ExitCodeFor(StructuredError.ErrorType.DiskFull);
+        }
+
         var installer = StandardInstaller.Create(_serviceProvider, new InstallerConfiguration
         {
             Downloads = downloads,
@@ -115,46 +163,18 @@ public class Install
             GameFolder = _gameLocator.GameLocation(modlist.GameType)
         });
 
-        var result = await installer.Begin(token);
-
-        // Check for manual downloads and print summary if any were encountered
-        var interventionHandler = _serviceProvider.GetService(typeof(IUserInterventionHandler)) as CLIUserInterventionHandler;
-        if (interventionHandler != null && interventionHandler.GetManualDownloads().Any())
+        InstallResult result;
+        try
         {
-            var manualDownloads = interventionHandler.GetManualDownloads();
-            
-            _logger.LogInformation("");
-            _logger.LogInformation("╔══════════════════════════════════════════════════════════════════════════════╗");
-            _logger.LogInformation("║                           MANUAL DOWNLOADS REQUIRED                          ║");
-            _logger.LogInformation("╚══════════════════════════════════════════════════════════════════════════════╝");
-            _logger.LogInformation("");
-            _logger.LogInformation("The following {Count} files require manual download. Please download each file and place it in your downloads directory, then run the installation again.", manualDownloads.Count);
-            _logger.LogInformation("");
-            _logger.LogInformation("Downloads directory: {DownloadsPath}", downloads);
-            _logger.LogInformation("");
-            
-            for (int i = 0; i < manualDownloads.Count; i++)
-            {
-                var manualDownload = manualDownloads[i];
-                var url = manualDownload.Archive.State.PrimaryKeyString;
-                
-                // Extract just the URL part from the state string
-                if (url.Contains("|"))
-                {
-                    url = url.Split('|').Last();
-                }
-                
-                _logger.LogInformation("{Number}. {FileName}", i + 1, manualDownload.Archive.Name);
-                _logger.LogInformation("    URL: {Url}", url);
-                _logger.LogInformation("");
-            }
-            
-            _logger.LogInformation("After downloading all files, run the installation command again.");
-            _logger.LogInformation("");
-            StructuredError.WriteError(StructuredError.ErrorType.PremiumRequired,
-                $"Nexus requires manual download for {manualDownloads.Count} file(s) — Premium account needed for automated install.",
-                new Dictionary<string, object?> { ["count"] = (object?)manualDownloads.Count });
-            return StructuredError.ExitCodeFor(StructuredError.ErrorType.PremiumRequired);
+            result = await installer.Begin(token);
+        }
+        catch (Exception ex)
+        {
+            var (errType, errMsg) = StructuredError.Classify(ex);
+            if (errType == null) return 1; // cancelled
+            _logger.LogError("Installation failed: {Message}", ex.Message);
+            StructuredError.WriteError(errType, errMsg);
+            return StructuredError.ExitCodeFor(errType);
         }
 
         // Handle different install results
@@ -179,6 +199,55 @@ public class Install
             _ => EmitAndReturn(StructuredError.ErrorType.EngineError,
                 $"Installation failed with unexpected result: {result}."),
         };
+    }
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern long pathconf(string path, int name);
+    private const int _PC_NAME_MAX = 3;
+
+    /// <summary>
+    /// Returns the effective NAME_MAX for the filesystem at the given path.
+    /// Walks up to the first existing ancestor directory if the path doesn't exist yet.
+    /// Falls back to 255 if pathconf is unavailable or the path can't be resolved.
+    /// </summary>
+    private static int GetEffectiveNameMax(AbsolutePath path)
+    {
+        var current = path;
+        while (current.Depth > 1 && !current.DirectoryExists())
+            current = current.Parent;
+
+        if (!current.DirectoryExists()) return 255;
+
+        try
+        {
+            var result = pathconf(current.ToString(), _PC_NAME_MAX);
+            return result > 0 ? (int)result : 255;
+        }
+        catch
+        {
+            return 255;
+        }
+    }
+
+    /// <summary>
+    /// Returns the available free bytes on the filesystem at the given path,
+    /// or 0 if it cannot be determined.
+    /// </summary>
+    private static long GetAvailableBytesAt(AbsolutePath path)
+    {
+        try
+        {
+            var pathStr = path.ToString();
+            var drive = DriveInfo.GetDrives()
+                .Where(d => pathStr.StartsWith(d.Name, StringComparison.Ordinal))
+                .OrderByDescending(d => d.Name.Length)
+                .FirstOrDefault();
+            return drive?.AvailableFreeSpace ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     private async Task<bool> DownloadMachineUrl(string machineUrl, AbsolutePath wabbajack, CancellationToken token)
@@ -347,36 +416,21 @@ public class Install
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to validate downloaded file as ZIP");
-                StructuredError.WriteError(StructuredError.ErrorType.EngineError,
-                    $"Failed to validate downloaded .wabbajack file: {ex.Message}",
+                var (errType, errMsg) = StructuredError.Classify(ex);
+                if (errType == null) return false;
+                _logger.LogError("Failed to validate downloaded file as ZIP: {Message}", ex.Message);
+                StructuredError.WriteError(errType,
+                    $"Failed to validate downloaded .wabbajack file: {errMsg}",
                     new Dictionary<string, object?> { ["filename"] = wabbajack.FileName.ToString() });
                 return false;
             }
         }
-        catch (OperationCanceledException)
-        {
-            _logger.LogInformation("Download cancelled by user");
-            return false;
-        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Download failed with exception");
-            var dlErrType = ex switch
-            {
-                System.Net.Http.HttpRequestException h when
-                    h.Message.Contains("401") || h.Message.Contains("403") ||
-                    h.Message.Contains("Unauthorized") || h.Message.Contains("Forbidden")
-                    => StructuredError.ErrorType.AuthFailed,
-                System.Net.Http.HttpRequestException
-                    => StructuredError.ErrorType.NetworkError,
-                System.IO.IOException io when io.Message.Contains("ENOSPC") || io.Message.Contains("No space left")
-                    => StructuredError.ErrorType.DiskFull,
-                UnauthorizedAccessException
-                    => StructuredError.ErrorType.PermissionDenied,
-                _ => StructuredError.ErrorType.NetworkError,
-            };
-            StructuredError.WriteError(dlErrType, $"Download failed: {ex.Message}",
+            var (errType, errMsg) = StructuredError.Classify(ex);
+            if (errType == null) { _logger.LogInformation("Download cancelled by user"); return false; }
+            _logger.LogError("Download failed: {Message}", ex.Message);
+            StructuredError.WriteError(errType, errMsg,
                 new Dictionary<string, object?> { ["filename"] = archive.Name });
             return false;
         }

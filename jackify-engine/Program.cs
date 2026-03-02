@@ -33,15 +33,20 @@ internal class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             var ex = e.ExceptionObject as Exception;
-            var msg = ex != null
-                ? $"{ex.GetType().Name}: {ex.Message}"
-                : "Unknown unhandled exception";
-            var ctx = ex?.StackTrace is { } st
-                ? new System.Collections.Generic.Dictionary<string, object?> { ["detail"] = st }
-                : null;
-            Wabbajack.CLI.Builder.StructuredError.WriteError(
-                Wabbajack.CLI.Builder.StructuredError.ErrorType.EngineError, msg, ctx);
-            Environment.Exit(6);
+            if (ex != null)
+            {
+                var (errType, errMsg) = Wabbajack.CLI.Builder.StructuredError.Classify(ex);
+                var type = errType ?? Wabbajack.CLI.Builder.StructuredError.ErrorType.EngineError;
+                Wabbajack.CLI.Builder.StructuredError.WriteError(type, errMsg);
+                Environment.Exit(Wabbajack.CLI.Builder.StructuredError.ExitCodeFor(type));
+            }
+            else
+            {
+                Wabbajack.CLI.Builder.StructuredError.WriteError(
+                    Wabbajack.CLI.Builder.StructuredError.ErrorType.EngineError,
+                    "Unknown unhandled exception");
+                Environment.Exit(6);
+            }
         };
 
         // Check for debug mode
