@@ -121,7 +121,7 @@ public class Install
         //    the effective limit to ~138 chars and would cause PathTooLongException mid-install.
         var nameMax = GetEffectiveNameMax(output);
         var longComponents = modlist.Directives
-            .SelectMany(d => d.To.ToString().Split('/'))
+            .SelectMany(d => d.To.ToString().Split('/', '\\'))
             .Where(c => c.Length > nameMax)
             .Distinct()
             .OrderByDescending(c => c.Length)
