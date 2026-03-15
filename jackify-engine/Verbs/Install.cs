@@ -53,10 +53,11 @@ public class Install
         new OptionDefinition(typeof(AbsolutePath), "w", "wabbajack", "Wabbajack file"),
         new OptionDefinition(typeof(string), "m", "machineUrl", "Machine url to download"),
         new OptionDefinition(typeof(AbsolutePath), "o", "output", "Output path"),
-        new OptionDefinition(typeof(AbsolutePath), "d", "downloads", "Downloads path")
+        new OptionDefinition(typeof(AbsolutePath), "d", "downloads", "Downloads path"),
+        new OptionDefinition(typeof(bool), "", "skip-disk-check", "Skip the pre-flight disk space check")
     });
 
-    internal async Task<int> Run(AbsolutePath wabbajack, AbsolutePath output, AbsolutePath downloads, string machineUrl, CancellationToken token)
+    internal async Task<int> Run(AbsolutePath wabbajack, AbsolutePath output, AbsolutePath downloads, string machineUrl, bool skipDiskCheck, CancellationToken token)
     {
         if (!string.IsNullOrEmpty(machineUrl))
         {
@@ -140,9 +141,10 @@ public class Install
         }
 
         // 3. Disk space — rough check: installed file sizes vs free space on target drive.
+        //    Skippable via --skip-disk-check for update scenarios where most files already exist.
         var installSizeBytes = modlist.Directives.Sum(d => d.Size);
         var freeBytes = GetAvailableBytesAt(output);
-        if (freeBytes > 0 && freeBytes < installSizeBytes)
+        if (!skipDiskCheck && freeBytes > 0 && freeBytes < installSizeBytes)
         {
             _logger.LogError("Insufficient disk space: {Need} needed, {Free} available",
                 installSizeBytes.ToFileSizeString(), freeBytes.ToFileSizeString());

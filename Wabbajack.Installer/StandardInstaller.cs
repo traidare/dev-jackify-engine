@@ -652,7 +652,7 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         if (bsaDir.DirectoryExists())
         {
             _logger.LogInformation("Removing temp folder {bsaCreationDir}", Consts.BSACreationDir);
-            bsaDir.DeleteDirectory();
+            try { bsaDir.DeleteDirectory(); } catch (IOException ex) { _logger.LogWarning("Could not remove temp folder {bsaCreationDir}: {msg}", Consts.BSACreationDir, ex.Message); }
             UpdateProgress(1);
         }
 
@@ -661,7 +661,7 @@ public class StandardInstaller : AInstaller<StandardInstaller>
         if (tempDir.DirectoryExists())
         {
             _logger.LogInformation("Removing temp folder __temp__");
-            tempDir.DeleteDirectory();
+            try { tempDir.DeleteDirectory(); } catch (IOException ex) { _logger.LogWarning("Could not remove temp folder __temp__: {msg}", ex.Message); }
             UpdateProgress(1);
         }
 

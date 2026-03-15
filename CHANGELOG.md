@@ -2,7 +2,13 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
-## Version 0.5.0 - TBD
+## Version 0.5.1 - 2026-03-15
+### Bug Fixes
+* **Disk space pre-flight skippable**: Added `--skip-disk-check` flag to bypass the pre-flight disk space check. Intended for update scenarios where the modlist is already installed and only minor changes are expected, making the full-size check a false positive. The structured `disk_full` error (exit 4) still fires normally when the flag is absent; Jackify GUI can offer a "Continue Anyway" dialog and re-launch with the flag.
+* **NAME_MAX false positive on Windows-style paths**: Pre-flight filename length check was splitting directive paths on `/` only. Modlist paths use `\` as separator, so the entire path was treated as a single component and falsely triggered the check on any path longer than NAME_MAX chars in total. Now splits on both `/` and `\`.
+* **Temp folder cleanup no longer fatal**: `DeleteDirectory()` on BSA and `__temp__` folders at the end of install is now wrapped in try/catch; an `IOException` (e.g. file still locked) logs a warning instead of crashing an otherwise successful installation.
+
+## Version 0.5.0 - 2026-03-13
 ### Bug Fixes
 * **Exception classifier**: Added `StructuredError.Classify(Exception)` — a single shared method that maps exception types to structured error types and messages (`disk_error`, `disk_full`, `permission_denied`, `network_error`, `auth_failed`, `engine_error`). All catch sites in `Install.Run`, `DownloadMachineUrl`, and `UnhandledException` now use the classifier instead of duplicated inline logic or hardcoded `engine_error` fallbacks. Adds new `disk_error` type (exit 4) for OS-level I/O read failures distinct from `disk_full`.
 * **`installer.Begin()` exceptions unhandled**: Any exception thrown during installation (I/O errors, permission denied, network failures, etc.) previously escaped to the `UnhandledException` fallback and was always reported as `engine_error` exit 6. Now caught at the call site with proper classification.
