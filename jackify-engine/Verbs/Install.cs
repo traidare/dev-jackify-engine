@@ -137,9 +137,10 @@ public class Install
                 var examples = string.Join("; ", longComponents.Select(c => $"'{c}' ({c.Length} chars)"));
                 _logger.LogError("Install filesystem NAME_MAX of {NameMax} chars is too small for this modlist", nameMax);
                 StructuredError.WriteError(StructuredError.ErrorType.ValidationFailed,
-                    $"Your install filesystem limits filenames to {nameMax} characters, but this modlist requires longer names: {examples}. " +
-                    $"This typically occurs with encrypted home directories (eCryptFS/fscrypt). " +
-                    $"Install to a non-encrypted location such as /opt/{modlist.Name.Replace(" ", "")}.",
+                    $"Your install filesystem has a reduced filename length limit of {nameMax} characters (standard is 255). " +
+                    $"This can occur on encrypted filesystems such as eCryptFS or fscrypt. " +
+                    $"These filenames from the modlist exceed that limit: {examples}. " +
+                    $"Please choose an install location on a filesystem that supports standard filename lengths.",
                     new Dictionary<string, object?> { ["name_max"] = nameMax, ["offending_names"] = longComponents });
                 return StructuredError.ExitCodeFor(StructuredError.ErrorType.ValidationFailed);
             }
