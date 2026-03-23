@@ -2,6 +2,11 @@
 
 Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlist installation capability on Linux systems using Proton for texture processing.
 
+## Version 0.5.2 - 2026-03-23
+### Bug Fixes
+* **`--skip-disk-check` flag now recognised**: `OptionDefinition.Aliases` was prepending `-` to an empty short-option string, producing a bare `-` alias that caused `System.CommandLine` to reject the option at registration time. Options with no short alias now emit only the long `--` form. Fixes the "unrecognised argument" error users on 0.5.1 saw when clicking "Continue Anyway" on a disk-full pre-flight error.
+* **Archive index lookup errors now actionable**: `InvalidOperationException: Sequence contains no matching element` during `InstallArchives` or BSA verification now emits `validation_failed` (exit 5) with the specific archive and file name, rather than `engine_error` (exit 6) with a bare LINQ exception. Error message tells the user which archive to delete and re-download.
+
 ## Version 0.5.1 - 2026-03-15
 ### Bug Fixes
 * **Disk space pre-flight skippable**: Added `--skip-disk-check` flag to bypass the pre-flight disk space check. Intended for update scenarios where the modlist is already installed and only minor changes are expected, making the full-size check a false positive. The structured `disk_full` error (exit 4) still fires normally when the flag is absent; Jackify GUI can offer a "Continue Anyway" dialog and re-launch with the flag.
