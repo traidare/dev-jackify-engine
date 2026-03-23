@@ -5,6 +5,7 @@ Jackify-Engine is a Linux-native fork of Wabbajack CLI that provides full modlis
 ## Version 0.5.2 - 2026-03-23
 ### Bug Fixes
 * **`--skip-disk-check` flag now recognised**: `OptionDefinition.Aliases` was prepending `-` to an empty short-option string, producing a bare `-` alias that caused `System.CommandLine` to reject the option at registration time. Options with no short alias now emit only the long `--` form. Fixes the "unrecognised argument" error users on 0.5.1 saw when clicking "Continue Anyway" on a disk-full pre-flight error.
+* **Disk space pre-flight checks downloads and install drives separately**: Previously only the install drive was checked against the total installed size, ignoring the downloads drive entirely. Now checks the downloads drive against archive sizes and the install drive against directive sizes independently. If both paths share the same filesystem (e.g. both on internal SSD), requires archives + install to fit together since they coexist during installation. Covers the common Steam Deck case of downloads on SD card and install on internal storage.
 * **Archive index lookup errors now actionable**: `InvalidOperationException: Sequence contains no matching element` during `InstallArchives` or BSA verification now emits `validation_failed` (exit 5) with the specific archive and file name, rather than `engine_error` (exit 6) with a bare LINQ exception. Error message tells the user which archive to delete and re-download.
 
 ## Version 0.5.1 - 2026-03-15
