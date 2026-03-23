@@ -120,24 +120,29 @@ public class Install
 
         // 2. Filesystem NAME_MAX — catches encrypted home dirs (eCryptFS/fscrypt) which reduce
         //    the effective limit to ~138 chars and would cause PathTooLongException mid-install.
+        //    Any modlist published on Wabbajack is NTFS-compatible (255-char component limit),
+        //    so this check is only meaningful when the local filesystem has a reduced NAME_MAX.
         var nameMax = GetEffectiveNameMax(output);
-        var longComponents = modlist.Directives
-            .SelectMany(d => d.To.ToString().Split('/', '\\'))
-            .Where(c => c.Length > nameMax)
-            .Distinct()
-            .OrderByDescending(c => c.Length)
-            .Take(5)
-            .ToList();
-        if (longComponents.Any())
+        if (nameMax < 255)
         {
-            var examples = string.Join("; ", longComponents.Select(c => $"'{c}' ({c.Length} chars)"));
-            _logger.LogError("Install filesystem NAME_MAX of {NameMax} chars is too small for this modlist", nameMax);
-            StructuredError.WriteError(StructuredError.ErrorType.ValidationFailed,
-                $"Your install filesystem limits filenames to {nameMax} characters, but this modlist requires longer names: {examples}. " +
-                $"This typically occurs with encrypted home directories (eCryptFS/fscrypt). " +
-                $"Install to a non-encrypted location such as /opt/{modlist.Name.Replace(" ", "")}.",
-                new Dictionary<string, object?> { ["name_max"] = nameMax, ["offending_names"] = longComponents });
-            return StructuredError.ExitCodeFor(StructuredError.ErrorType.ValidationFailed);
+            var longComponents = modlist.Directives
+                .SelectMany(d => d.To.Parts)
+                .Where(c => c.Length > nameMax)
+                .Distinct()
+                .OrderByDescending(c => c.Length)
+                .Take(5)
+                .ToList();
+            if (longComponents.Any())
+            {
+                var examples = string.Join("; ", longComponents.Select(c => $"'{c}' ({c.Length} chars)"));
+                _logger.LogError("Install filesystem NAME_MAX of {NameMax} chars is too small for this modlist", nameMax);
+                StructuredError.WriteError(StructuredError.ErrorType.ValidationFailed,
+                    $"Your install filesystem limits filenames to {nameMax} characters, but this modlist requires longer names: {examples}. " +
+                    $"This typically occurs with encrypted home directories (eCryptFS/fscrypt). " +
+                    $"Install to a non-encrypted location such as /opt/{modlist.Name.Replace(" ", "")}.",
+                    new Dictionary<string, object?> { ["name_max"] = nameMax, ["offending_names"] = longComponents });
+                return StructuredError.ExitCodeFor(StructuredError.ErrorType.ValidationFailed);
+            }
         }
 
         // 3. Disk space — check downloads and install drives separately.
