@@ -6,3 +6,6 @@ obj
 .\packages\*
 /VERSION.txt
 *.opencover.xml
+
+/result*
+/source
