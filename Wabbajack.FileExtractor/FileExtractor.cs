@@ -76,6 +76,75 @@ public class FileExtractor
         '°'
     };
 
+    private static AbsolutePath ResolveExtractorPathForCurrentPlatform(string bundledRelativePath, params string[] linuxToolNames)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            foreach (var toolName in linuxToolNames)
+            {
+                var resolved = ResolveExecutableFromPath(toolName);
+                if (resolved != null)
+                    return resolved.Value;
+            }
+        }
+
+        return bundledRelativePath.ToRelativePath().RelativeTo(KnownFolders.EntryPoint);
+    }
+
+    private static AbsolutePath? ResolveExecutableFromPath(string toolName)
+    {
+        var pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(pathEnv))
+            pathEnv = string.Empty;
+
+        foreach (var pathDir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                var candidate = Path.Combine(pathDir, toolName);
+                if (File.Exists(candidate))
+                    return candidate.ToAbsolutePath();
+            }
+            catch (Exception)
+            {
+                // Ignore malformed PATH entries and continue searching.
+            }
+        }
+
+        // NixOS commonly exposes system tools here even when PATH is sanitized by wrappers.
+        try
+        {
+            var systemCandidate = Path.Combine("/run/current-system/sw/bin", toolName);
+            if (File.Exists(systemCandidate))
+                return systemCandidate.ToAbsolutePath();
+        }
+        catch (Exception)
+        {
+            // Ignore lookup failures and report the tool as unresolved.
+        }
+
+        return null;
+    }
+
+    private static (string FileName, string[] Arguments) BuildProtonLaunchCommand(
+        string protonPath,
+        params string[] protonArguments)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            var steamRunPath = ResolveExecutableFromPath("steam-run");
+            if (steamRunPath != null)
+            {
+                return (
+                    steamRunPath.Value.ToString(),
+                    new[] { protonPath }.Concat(protonArguments).ToArray()
+                );
+            }
+        }
+
+        return (protonPath, protonArguments);
+    }
+
     private readonly IResource<FileExtractor> _limiter;
     private readonly ILogger<FileExtractor> _logger;
     private readonly TemporaryFileManager _manager;
@@ -347,16 +416,14 @@ public class FileExtractor
 
             _logger.LogDebug("Extracting {Source}", source.FileName);
 
-            var initialPath = "";
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                initialPath = @"Extractors\windows-x64\7z.exe";
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                initialPath = @"Extractors\linux-x64\7zz";
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-                initialPath = @"Extractors\mac\7zz";
-
             var process = new ProcessHelper
-                {Path = initialPath.ToRelativePath().RelativeTo(KnownFolders.EntryPoint)};
+            {
+                Path = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                    ? @"Extractors\windows-x64\7z.exe".ToRelativePath().RelativeTo(KnownFolders.EntryPoint)
+                    : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                        ? @"Extractors\mac\7zz".ToRelativePath().RelativeTo(KnownFolders.EntryPoint)
+                        : ResolveExtractorPathForCurrentPlatform(@"Extractors\linux-x64\7zz", "7zz", "7z")
+            };
 
             if (onlyFiles != null)
             {
@@ -407,6 +474,8 @@ public class FileExtractor
 
             while (retryCount <= maxRetries)
             {
+                token.ThrowIfCancellationRequested();
+
                 if (retryCount > 0)
                 {
                     _logger.LogWarning("Retrying 7zip extraction for {archive} (attempt {attempt}/{maxAttempts})", 
@@ -515,6 +584,7 @@ public class FileExtractor
 
                 if (shouldTryProtonFallback)
                 {
+                    token.ThrowIfCancellationRequested();
                     _logger.LogInformation("7zip exit code 2 on {archive}, attempting Proton 7z.exe fallback", source.FileName);
 
                     try
@@ -644,10 +714,19 @@ public class FileExtractor
             }
             
             _logger.LogDebug("Proton 7z.exe extracting {Source}", source.FileName);
+
+            // steam-run uses a private /tmp, so Proton compatdata created on the host /tmp
+            // is invisible inside the FHS environment. Keep the prefix under Jackify's
+            // managed temp directory instead.
+            await using var protonCompatDataFolder = _manager.CreateFolder();
             
             // Extract EVERYTHING using Proton 7z.exe - don't try to extract specific files
             // The test script proved this works, so replicate that exactly
-            var processResult = await RunProton7zExtraction(source.ToString(), tempFolder.Path.ToString());
+            var processResult = await RunProton7zExtraction(
+                source.ToString(),
+                tempFolder.Path.ToString(),
+                protonCompatDataFolder.Path.ToString(),
+                token);
             
             if (processResult != 0)
             {
@@ -691,8 +770,14 @@ public class FileExtractor
         }
     }
     
-    private async Task<int> RunProton7zExtraction(string archivePath, string outputPath)
+    private async Task<int> RunProton7zExtraction(
+        string archivePath,
+        string outputPath,
+        string compatDataPath,
+        CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
+
         // Use dynamic Proton detection like texconv.exe does
         var protonDetector = new ProtonDetector(Microsoft.Extensions.Logging.Abstractions.NullLogger<Wabbajack.Common.ProtonDetector>.Instance);
 
@@ -704,26 +789,39 @@ public class FileExtractor
             return -1;
         }
         
-        var winePrefixPath = Path.Combine(Path.GetTempPath(), "jackify-proton-extraction");
+        Directory.CreateDirectory(compatDataPath);
+        var winePrefixPath = Path.Combine(compatDataPath, "pfx");
         Directory.CreateDirectory(winePrefixPath);
         
         // Use absolute path to 7z.exe to avoid path resolution issues
         var sevenZipPath = "Extractors/windows-x64/7z.exe".ToRelativePath().RelativeTo(KnownFolders.EntryPoint).ToString();
         
+        var (commandPath, commandArguments) = BuildProtonLaunchCommand(
+            protonPath,
+            "run",
+            sevenZipPath,
+            "x",
+            "-sccUTF-8",
+            $"-o{outputPath}",
+            archivePath);
+
         var processInfo = new ProcessStartInfo
         {
-            FileName = protonPath,
-            Arguments = $"run \"{sevenZipPath}\" x -sccUTF-8 -o\"{outputPath}\" \"{archivePath}\"",
+            FileName = commandPath,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
             WorkingDirectory = KnownFolders.EntryPoint.ToString()
         };
+        foreach (var argument in commandArguments)
+        {
+            processInfo.ArgumentList.Add(argument);
+        }
 
         // Set environment variables properly 
         processInfo.Environment["WINEPREFIX"] = winePrefixPath;
-        processInfo.Environment["STEAM_COMPAT_DATA_PATH"] = winePrefixPath;
+        processInfo.Environment["STEAM_COMPAT_DATA_PATH"] = compatDataPath;
         processInfo.Environment["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = protonDetector.GetSteamClientInstallPath();
         processInfo.Environment["WINEDEBUG"] = "-all";
         processInfo.Environment["DISPLAY"] = "";
@@ -731,14 +829,17 @@ public class FileExtractor
         processInfo.Environment["WINEDLLOVERRIDES"] = "msdia80.dll=n;conhost.exe=d;cmd.exe=d";
 
         _logger.LogDebug("PROTON EXTRACTION DEBUG:");
-        _logger.LogDebug("Command: {ProtonPath} {Arguments}", protonPath, processInfo.Arguments);
+        _logger.LogDebug("Command: {Command}", string.Join(" ", new[] { commandPath }.Concat(
+            commandArguments.Select(arg => arg.Contains(' ') ? $"\"{arg}\"" : arg))));
         _logger.LogDebug("Working Dir: {WorkingDir}", processInfo.WorkingDirectory);
         _logger.LogDebug("Archive exists: {ArchiveExists}", File.Exists(archivePath));
         _logger.LogDebug("7z.exe exists: {ExtractorExists}", File.Exists(sevenZipPath));
         _logger.LogDebug("Output dir exists: {OutputExists}", Directory.Exists(outputPath));
+        _logger.LogDebug("STEAM_COMPAT_DATA_PATH: {CompatDataPath}", compatDataPath);
         _logger.LogDebug("WINEPREFIX: {WinePrefix}", winePrefixPath);
 
         using var process = new Process { StartInfo = processInfo };
+        token.ThrowIfCancellationRequested();
         process.Start();
         
         // Capture output for debugging
@@ -929,24 +1030,22 @@ public class FileExtractor
                 source = spoolFile.Value.Path;
             }
 
-            var initialPath = "";
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                initialPath = @"Extractors\windows-x64\innoextract.exe";
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                initialPath = @"Extractors\linux-x64\innoextract";
-
             // This might not be the best way to do it since it forces a full extraction
             // of the full .exe file, but the other method that would tell WJ to only extract specific files was bugged
 
             var processScan = new ProcessHelper
             {
-                Path = initialPath.ToRelativePath().RelativeTo(KnownFolders.EntryPoint),
+                Path = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                    ? @"Extractors\windows-x64\innoextract.exe".ToRelativePath().RelativeTo(KnownFolders.EntryPoint)
+                    : ResolveExtractorPathForCurrentPlatform(@"Extractors\linux-x64\innoextract", "innoextract"),
                 Arguments = [$"\"{source}\"", "--list-sizes", "-m", "--collisions \"rename-all\""]
             };
 
             var processExtract = new ProcessHelper
             {
-                Path = initialPath.ToRelativePath().RelativeTo(KnownFolders.EntryPoint),
+                Path = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                    ? @"Extractors\windows-x64\innoextract.exe".ToRelativePath().RelativeTo(KnownFolders.EntryPoint)
+                    : ResolveExtractorPathForCurrentPlatform(@"Extractors\linux-x64\innoextract", "innoextract"),
                 Arguments = [$"\"{source}\"", "-e", "-m", "--list-sizes", "--collisions \"rename-all\"", $"-d \"{dest}\""]
             };
             

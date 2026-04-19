@@ -9,6 +9,7 @@ using Wabbajack.Common;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace Wabbajack.Hashing.PHash
 {
@@ -48,6 +49,65 @@ namespace Wabbajack.Hashing.PHash
             _hasNvidiaGpu = DetectNvidiaGpu();
 
             _logger.LogDebug("Using DISPLAY={Display} for GPU-accelerated texture processing", _gpuDisplay);
+        }
+
+        private static AbsolutePath? ResolveExecutableFromPath(string toolName)
+        {
+            var pathEnv = Environment.GetEnvironmentVariable("PATH");
+            if (string.IsNullOrWhiteSpace(pathEnv))
+            {
+                pathEnv = string.Empty;
+            }
+
+            foreach (var pathDir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                try
+                {
+                    var candidate = Path.Combine(pathDir, toolName);
+                    if (File.Exists(candidate))
+                    {
+                        return candidate.ToAbsolutePath();
+                    }
+                }
+                catch (Exception)
+                {
+                    // Ignore malformed PATH entries and continue searching.
+                }
+            }
+
+            try
+            {
+                var systemCandidate = Path.Combine("/run/current-system/sw/bin", toolName);
+                if (File.Exists(systemCandidate))
+                {
+                    return systemCandidate.ToAbsolutePath();
+                }
+            }
+            catch (Exception)
+            {
+                // Ignore lookup failures and report the tool as unresolved.
+            }
+
+            return null;
+        }
+
+        private static (AbsolutePath Path, IEnumerable<object> Arguments) BuildProtonCommand(
+            AbsolutePath protonWrapperPath,
+            params object[] protonArguments)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                var steamRunPath = ResolveExecutableFromPath("steam-run");
+                if (steamRunPath != null)
+                {
+                    return (
+                        steamRunPath.Value,
+                        new object[] { protonWrapperPath }.Concat(protonArguments)
+                    );
+                }
+            }
+
+            return (protonWrapperPath, protonArguments);
         }
         
         /// <summary>
@@ -305,14 +365,21 @@ namespace Wabbajack.Hashing.PHash
                 throw new InvalidOperationException("No Proton installation found. Please ensure Steam is installed with Proton (Experimental, 10.0, or 9.0)");
             }
 
+            var protonWrapperAbsPath = protonWrapperPath.ToAbsolutePath();
+            var (commandPath, commandArguments) = BuildProtonCommand(
+                protonWrapperAbsPath,
+                "run",
+                "wineboot",
+                "--init");
+
             _logger.LogDebug("Using Proton wrapper at {ProtonPath}", protonWrapperPath);
 
             // Initialize the Proton prefix with wineboot
             // Use valid DISPLAY for GPU access (needed for DXVK/VKD3D initialization)
             var ph = new ProcessHelper
             {
-                Path = protonWrapperPath.ToAbsolutePath(),
-                Arguments = new object[] { "run", "wineboot", "--init" },
+                Path = commandPath,
+                Arguments = commandArguments,
                 EnvironmentVariables = GetGpuEnvironmentVariables(_currentPrefix),
                 ThrowOnNonZeroExitCode = true,
                 LogError = true
@@ -340,10 +407,15 @@ namespace Wabbajack.Hashing.PHash
             // 30,000+ focus-stealing windows during large modlist installations
             var envVars = GetGpuEnvironmentVariables(prefix);
             
+            var protonWrapperAbsPath = protonWrapperPath.ToAbsolutePath();
+            var (commandPath, commandArguments) = BuildProtonCommand(
+                protonWrapperAbsPath,
+                new object[] { "run", "Tools\\texconv.exe" }.Concat(texConvArgs).ToArray());
+
             return new ProcessHelper
             {
-                Path = protonWrapperPath.ToAbsolutePath(),
-                Arguments = new object[] { "run", "Tools\\texconv.exe" }.Concat(texConvArgs),
+                Path = commandPath,
+                Arguments = commandArguments,
                 EnvironmentVariables = envVars,
                 WorkingDirectory = KnownFolders.EntryPoint.ToString(),
                 ThrowOnNonZeroExitCode = true,
@@ -363,10 +435,15 @@ namespace Wabbajack.Hashing.PHash
             }
             
             // Use valid DISPLAY for GPU access (texdiag may also use GPU for texture analysis)
+            var protonWrapperAbsPath = protonWrapperPath.ToAbsolutePath();
+            var (commandPath, commandArguments) = BuildProtonCommand(
+                protonWrapperAbsPath,
+                new object[] { "run", "Tools\\texdiag.exe" }.Concat(texDiagArgs).ToArray());
+
             return new ProcessHelper
             {
-                Path = protonWrapperPath.ToAbsolutePath(),
-                Arguments = new object[] { "run", "Tools\\texdiag.exe" }.Concat(texDiagArgs),
+                Path = commandPath,
+                Arguments = commandArguments,
                 EnvironmentVariables = GetGpuEnvironmentVariables(prefix),
                 WorkingDirectory = KnownFolders.EntryPoint.ToString(),
                 ThrowOnNonZeroExitCode = true,
@@ -386,10 +463,15 @@ namespace Wabbajack.Hashing.PHash
             }
             
             // 7z.exe doesn't need GPU, so we can suppress display to hide windows
+            var protonWrapperAbsPath = protonWrapperPath.ToAbsolutePath();
+            var (commandPath, commandArguments) = BuildProtonCommand(
+                protonWrapperAbsPath,
+                new object[] { "run", "Extractors\\windows-x64\\7z.exe" }.Concat(sevenZipArgs).ToArray());
+
             return new ProcessHelper
             {
-                Path = protonWrapperPath.ToAbsolutePath(),
-                Arguments = new object[] { "run", "Extractors\\windows-x64\\7z.exe" }.Concat(sevenZipArgs),
+                Path = commandPath,
+                Arguments = commandArguments,
                 EnvironmentVariables = new Dictionary<string, string>
                 {
                     ["WINEPREFIX"] = prefix.ToString(),

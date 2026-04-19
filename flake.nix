@@ -8,7 +8,14 @@
         system,
         ...
       }: let
-        pkgs = inputs.nixpkgs.legacyPackages.${system};
+        pkgs = import inputs.nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate = pkg:
+            builtins.elem (inputs.nixpkgs.lib.getName pkg) [
+              "7zz"
+              "uasm"
+            ];
+        };
       in {
         packages = {
           jackify-engine = pkgs.callPackage ./nix/package.nix {};

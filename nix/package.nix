@@ -1,5 +1,5 @@
 {
-  _7zip-zstd,
+  _7zz-rar,
   buildDotnetModule,
   dotnet-runtime_8,
   dotnet-sdk_8,
@@ -63,7 +63,7 @@ in
     postFixup = ''
       wrapProgram "$out/bin/$pname" \
         --prefix PATH : ${lib.makeBinPath [
-        _7zip-zstd
+        _7zz-rar
         innoextract
       ]}
     '';
